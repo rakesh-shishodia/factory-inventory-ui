@@ -3,6 +3,10 @@ const SHEET_PRODUCTS = 'Products';
 const SHEET_TX       = 'Transactions';
 const SHEET_SYNC     = 'SyncQueue';
 
+// Cache settings for getProduct (per-SKU). TTL 10 minutes.
+const CACHE_TTL_SEC    = 600;
+const CACHE_KEY_PREFIX = 'prod:'; // key = 'prod:' + sku
+
 /**** WEB ENTRYPOINTS ****/
 function doGet(e) {
   const action = e && e.parameter ? e.parameter.action : null;
@@ -72,6 +76,20 @@ function doPost(e) {
 /**** CORE LOGIC (shared by HTTP + RPC) ****/
 function coreGetProductBySku_(sku) {
   if (!sku) throw new Error('Missing SKU');
+
+  // Normalize and try cache first
+  const keySku = String(sku).trim();
+  const cache  = CacheService.getScriptCache();
+  const cached = cache.get(CACHE_KEY_PREFIX + keySku);
+  if (cached) {
+    try {
+      return JSON.parse(cached);
+    } catch (_) {
+      // fall through to sheet lookup on parse error
+    }
+  }
+
+  // Fallback: read from sheet
   const sheet = SpreadsheetApp.getActive().getSheetByName(SHEET_PRODUCTS);
   if (!sheet) throw new Error(`Missing sheet "${SHEET_PRODUCTS}"`);
   const data = sheet.getDataRange().getValues();
@@ -79,9 +97,12 @@ function coreGetProductBySku_(sku) {
   const skuIndex = headers.indexOf('sku');
   if (skuIndex < 0) throw new Error('Header "sku" not found in Products');
   for (let i = 1; i < data.length; i++) {
-    if (data[i][skuIndex] === sku) {
+    if (String(data[i][skuIndex]).trim() === keySku) {
       const row = {};
       headers.forEach((h, j) => row[h] = data[i][j]);
+      try {
+        cache.put(CACHE_KEY_PREFIX + keySku, JSON.stringify(row), CACHE_TTL_SEC);
+      } catch (_) { /* ignore cache quota errors */ }
       return row;
     }
   }
