@@ -121,6 +121,8 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const state = { product: null, scanner: null, cameras: [], camIdx: 0 };
+    // Replace with your Apps Script deployment /exec URL
+    const APPS_SCRIPT_BASE = "https://script.google.com/macros/s/AKfycbw6AJvMkDqBeiPGGwh2rzq22Qj-76gSbSjA9gGzAhhKVW3lDMT_js7OD9Xhr2wTIZo9ag/exec";
 
     function setStatus(el, msg, kind) {
       el.style.display = msg ? 'block' : 'none';
@@ -138,7 +140,7 @@
       $('submitBtn').disabled = !ok;
     }
 
-    // ---- Product fetch via google.script.run (no CORS, stable across deploys)
+    // ---- Product fetch via fetch()
     function fetchProduct() {
       setStatus($('fetchStatus'), 'Loading…', '');
       $('prodCard').style.display = 'none';
@@ -151,8 +153,9 @@
         return;
       }
 
-      google.script.run
-        .withSuccessHandler((data) => {
+      fetch(`${APPS_SCRIPT_BASE}?action=getProduct&sku=${encodeURIComponent(sku)}`)
+        .then(r => r.ok ? r.json() : Promise.reject(`${r.status} ${r.statusText}`))
+        .then((data) => {
           state.product = data;
           $('pName').textContent  = data.name ?? '';
           $('pLoc').textContent   = data.location ? `Loc: ${data.location}` : '';
@@ -162,11 +165,10 @@
           setStatus($('fetchStatus'), 'Product loaded.', 'status-ok');
           setSubmitEnabled();
         })
-        .withFailureHandler((err) => {
+        .catch((err) => {
           setStatus($('fetchStatus'), String(err), 'status-err');
           setSubmitEnabled();
-        })
-        .api_getProduct(sku);
+        });
     }
 
     function nudgeQty(delta) {
@@ -186,18 +188,30 @@
       const location = $('location').value.trim() || 'MAIN';
 
       let qty_change = qty;
-      if (reason === 'pick' || reason === 'pack') qty_change = Math.abs(qty) * -1;
-      if (reason === 'return')                     qty_change = Math.abs(qty);
+      if (reason === 'pick' || reason === 'pack') qty_change = -Math.abs(qty);
+      if (reason === 'return')                     qty_change =  Math.abs(qty);
 
       if (!picker || !sku || !qty_change || qty_change === 0) return;
 
       setStatus($('txStatus'), 'Submitting…', '');
       $('submitBtn').disabled = true;
 
-      const payload = { user: picker, sku, variant_key: '', location, qty_change, reason, note };
+      const body = new URLSearchParams({
+        user: picker,
+        sku,
+        location,
+        qty_change: String(qty_change),
+        reason,
+        note
+      });
 
-      google.script.run
-        .withSuccessHandler((data) => {
+      fetch(`${APPS_SCRIPT_BASE}?action=createTx`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body
+      })
+        .then(r => r.ok ? r.json() : Promise.reject(`${r.status} ${r.statusText}`))
+        .then((data) => {
           if (data && data.ok) {
             $('pStock').textContent = data.new_stock;
             setStatus($('txStatus'), data.warning || 'Transaction saved.', data.warning ? 'status-warn' : 'status-ok');
@@ -209,12 +223,11 @@
           $('submitBtn').disabled = false;
           setSubmitEnabled();
         })
-        .withFailureHandler((err) => {
+        .catch((err) => {
           setStatus($('txStatus'), String(err), 'status-err');
           $('submitBtn').disabled = false;
           setSubmitEnabled();
-        })
-        .api_createTx(payload);
+        });
     }
 
     // ---- QR scanner

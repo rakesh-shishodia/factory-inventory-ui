@@ -15,22 +15,60 @@ function doGet(e) {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL); // optional, OK to keep/remove
 }
 function doPost(e) {
-  // Optional: keep HTTP POST route for external tools (curl/Postman)
   try {
     const action = e && e.parameter ? e.parameter.action : null;
-    if (action === 'createTx') {
-      const body = e.postData && e.postData.contents ? e.postData.contents : '{}';
-      const data = JSON.parse(body);
-      return createTxHandler(data);
+    if (action !== 'createTx') {
+      return ContentService.createTextOutput(JSON.stringify({ error: 'Unknown action (POST)' }))
+        .setMimeType(ContentService.MimeType.JSON);
     }
-    return ContentService.createTextOutput(JSON.stringify({ error: 'Unknown action (POST)' }))
+
+    // Accept JSON or form-encoded (or text/plain)
+    let data = {};
+    if (e && e.postData) {
+      const ct   = String(e.postData.type || '').toLowerCase();
+      const body = e.postData.contents || '';
+
+      if (ct.includes('application/json')) {
+        // Frontend sent JSON
+        data = JSON.parse(body || '{}');
+      } else if (ct.includes('application/x-www-form-urlencoded') || ct.includes('text/plain')) {
+        // Frontend sent form data (no preflight) or simple text
+        data = {
+          user:       e.parameter.user,
+          sku:        e.parameter.sku,
+          location:   e.parameter.location,
+          qty_change: e.parameter.qty_change,
+          reason:     e.parameter.reason,
+          note:       e.parameter.note
+        };
+      } else {
+        // Fallback: try JSON, else use parameters
+        try {
+          data = JSON.parse(body || '{}');
+        } catch (_) {
+          data = {
+            user:       e.parameter.user,
+            sku:        e.parameter.sku,
+            location:   e.parameter.location,
+            qty_change: e.parameter.qty_change,
+            reason:     e.parameter.reason,
+            note:       e.parameter.note
+          };
+        }
+      }
+    }
+
+    const resp = coreCreateTx_(data);
+    return ContentService.createTextOutput(JSON.stringify(resp))
       .setMimeType(ContentService.MimeType.JSON);
+
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({ error: 'Server error in doPost', details: String(err) }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({
+      error: 'Server error in doPost',
+      details: String(err)
+    })).setMimeType(ContentService.MimeType.JSON);
   }
 }
-
 /**** CORE LOGIC (shared by HTTP + RPC) ****/
 function coreGetProductBySku_(sku) {
   if (!sku) throw new Error('Missing SKU');
