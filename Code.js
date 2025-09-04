@@ -177,6 +177,9 @@ function onOpen() {
     .addItem('2) Push queued to Ecwid',  'ecwid_pushQueued')
     .addSeparator()
     .addItem('Test Auth',                'ecwid_testAuth')
+    .addSeparator()
+    .addItem('Refresh Catalog from Ecwid', 'ecwid_refreshCatalog')
+    .addItem('Import product by ID…',    'ecwid_importProductById')
     .addToUi();
 }
 
@@ -407,4 +410,250 @@ function ecwid_creds_() {
   const token   = props.getProperty(SP_ECWID_TOKEN);
   if (!storeId || !token) throw new Error('Missing ECWID_STORE_ID or ECWID_TOKEN in Script Properties.');
   return { storeId, token };
+}
+function ecwid_refreshCatalog() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActive();
+  const prodSheet = ss.getSheetByName(SHEET_PRODUCTS);
+  if (!prodSheet) { ui.alert('Products sheet not found'); return; }
+
+  // 1) Read existing Products to preserve user columns by SKU
+  const existing = prodSheet.getDataRange().getValues();
+  const existingHdr = existing[0] || [];
+  const existingIdx = indexer_(existingHdr, existingHdr); // identity map name->index
+  const skuCol = existingIdx['sku'];
+  if (skuCol < 0) { ui.alert('Products sheet must include a "sku" header'); return; }
+
+  const keepBySku = {}; // sku -> row object of existing values
+  for (let r = 1; r < existing.length; r++) {
+    const row = existing[r];
+    const sku = String(row[skuCol] || '').trim();
+    if (!sku) continue;
+    const obj = {};
+    for (let c = 0; c < existingHdr.length; c++) obj[String(existingHdr[c]||'').toLowerCase()] = row[c];
+    keepBySku[sku] = obj;
+  }
+
+  // 2) Fetch full Ecwid catalog (paged)
+  const { storeId, token } = ecwid_creds_();
+  const pageLimit = 100;
+  let offset = 0, total = null;
+  const ecwidRows = []; // rows with import fields only
+
+  do {
+    const url = `https://app.ecwid.com/api/v3/${storeId}/products?showVariants=true&limit=${pageLimit}&offset=${offset}`;
+    const resp = UrlFetchApp.fetch(url, { method: 'get', headers: { Authorization: `Bearer ${token}` }, muteHttpExceptions: true });
+    if (resp.getResponseCode() !== 200) { ui.alert(`Failed to fetch catalog (HTTP ${resp.getResponseCode()})`); return; }
+    const data = JSON.parse(resp.getContentText() || '{}');
+    total = data.total || 0;
+    const items = data.items || [];
+
+    for (const p of items) {
+      const pThumb = p.thumbnailUrl || p.imageUrl || '';
+      // product-level SKU
+      if (p.sku && String(p.sku).trim()) {
+        ecwidRows.push({
+          product_id: p.id,
+          combination_id: '',
+          sku: p.sku,
+          name: p.name,
+          option_values: '',
+          enabled: p.enabled,
+          unlimited: p.unlimited,
+          image_url: pThumb
+        });
+      }
+      // variant-level SKUs
+      if (Array.isArray(p.combinations)) {
+        for (const c of p.combinations) {
+          if (!c || !c.sku || !String(c.sku).trim()) continue;
+          const cThumb = c.thumbnailUrl || c.imageUrl || pThumb || '';
+          ecwidRows.push({
+            product_id: p.id,
+            combination_id: c.id,
+            sku: c.sku,
+            name: p.name,
+            option_values: ecwid_formatOptionValues_(c.optionValues),
+            enabled: c.enabled,
+            unlimited: c.unlimited,
+            image_url: cThumb
+          });
+        }
+      }
+    }
+    offset += items.length;
+  } while (offset < total);
+
+  // 3) Build final header: start from existing headers, ensure required import fields exist
+  const required = ['product_id','combination_id','sku','name','option_values','enabled','unlimited','image_url'];
+  const finalHdr = existingHdr.slice();
+  for (const h of required) {
+    if (finalHdr.map(x=>String(x||'').toLowerCase()).indexOf(h) === -1) finalHdr.push(h);
+  }
+
+  // 4) Compose full table in memory, preserving existing per SKU for non-import columns
+  const finalRows = [];
+  finalRows.push(finalHdr); // header row
+  const importSet = new Set(required);
+
+  for (const r of ecwidRows) {
+    const sku = r.sku;
+    const keep = keepBySku[sku] || {};
+    const rowArr = new Array(finalHdr.length).fill('');
+    for (let i = 0; i < finalHdr.length; i++) {
+      const colName = String(finalHdr[i]||'').toLowerCase();
+      if (importSet.has(colName)) {
+        rowArr[i] = r[colName] != null ? r[colName] : '';
+      } else {
+        rowArr[i] = keep[colName] != null ? keep[colName] : '';
+      }
+    }
+    finalRows.push(rowArr);
+  }
+
+  // 5) Write to TMP in bulk, then swap back to Products
+  const TMP = 'CatalogImport_TMP';
+  let tmp = ss.getSheetByName(TMP);
+  if (tmp) ss.deleteSheet(tmp);
+  tmp = ss.insertSheet(TMP);
+
+  const chunk = 1000; // rows per chunk to avoid setValues limits
+  for (let start = 0; start < finalRows.length; start += chunk) {
+    const block = finalRows.slice(start, Math.min(start + chunk, finalRows.length));
+    tmp.getRange(start + 1, 1, block.length, finalHdr.length).setValues(block);
+  }
+
+  // Clear Products and bulk write composed table back
+  prodSheet.clearContents();
+  for (let start = 0; start < finalRows.length; start += chunk) {
+    const block = finalRows.slice(start, Math.min(start + chunk, finalRows.length));
+    prodSheet.getRange(start + 1, 1, block.length, finalHdr.length).setValues(block);
+  }
+
+  // Optional: remove TMP sheet after success
+  ss.deleteSheet(tmp);
+
+  ui.alert(`Catalog refresh complete. Rows written: ${finalRows.length - 1}`);
+}
+
+function ecwid_importProductById() {
+  const ui = SpreadsheetApp.getUi();
+  const resp = ui.prompt('Import product by ID', 'Enter Ecwid productId (numeric):', ui.ButtonSet.OK_CANCEL);
+  if (resp.getSelectedButton() !== ui.Button.OK) return;
+  const pid = String(resp.getResponseText()||'').trim();
+  if (!pid || !/^\d+$/.test(pid)) { ui.alert('Invalid productId'); return; }
+
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ss.getSheetByName(SHEET_PRODUCTS);
+  if (!sheet) { ui.alert('Products sheet not found'); return; }
+
+  // Read existing table once
+  const existing = sheet.getDataRange().getValues();
+  const hdr = existing[0] || [];
+  const idx = indexer_(hdr, hdr);
+  const skuCol = idx['sku'];
+  if (skuCol < 0) { ui.alert('Products sheet must include a "sku" header'); return; }
+
+  // Map existing rows by SKU
+  const keepBySku = {};
+  for (let r = 1; r < existing.length; r++) {
+    const row = existing[r];
+    const sku = String(row[skuCol] || '').trim();
+    if (!sku) continue;
+    const obj = {};
+    for (let c = 0; c < hdr.length; c++) obj[String(hdr[c]||'').toLowerCase()] = row[c];
+    keepBySku[sku] = obj;
+  }
+
+  // Fetch product (with variants)
+  const prod = ecwid_fetchProductById_(pid);
+  if (!prod) { ui.alert('Product not found or API error'); return; }
+
+  // Build rows for this product
+  const p = prod;
+  const pThumb = p.thumbnailUrl || p.imageUrl || '';
+  const rows = [];
+  if (p.sku && String(p.sku).trim()) {
+    rows.push({ product_id: p.id, combination_id: '', sku: p.sku, name: p.name, option_values: '', enabled: p.enabled, unlimited: p.unlimited, image_url: pThumb });
+  }
+  if (Array.isArray(p.combinations)) {
+    for (const c of p.combinations) {
+      if (!c || !c.sku || !String(c.sku).trim()) continue;
+      const cThumb = c.thumbnailUrl || c.imageUrl || pThumb || '';
+      rows.push({ product_id: p.id, combination_id: c.id, sku: c.sku, name: p.name, option_values: ecwid_formatOptionValues_(c.optionValues), enabled: c.enabled, unlimited: c.unlimited, image_url: cThumb });
+    }
+  }
+
+  // Ensure required headers exist
+  const required = ['product_id','combination_id','sku','name','option_values','enabled','unlimited','image_url'];
+  const finalHdr = hdr.slice();
+  for (const h of required) {
+    if (finalHdr.map(x=>String(x||'').toLowerCase()).indexOf(h) === -1) finalHdr.push(h);
+  }
+  if (finalHdr.length !== hdr.length) {
+    // expand sheet headers if new columns were added
+    sheet.insertColumnsAfter(hdr.length, finalHdr.length - hdr.length);
+    sheet.getRange(1, 1, 1, finalHdr.length).setValues([finalHdr]);
+  }
+
+  // Upsert rows: update existing SKUs in place, collect new SKUs to append
+  const importSet = new Set(required);
+  const newRows = [];
+
+  // Build a helper to render a row array for a given SKU record
+  function renderRow(obj, keepMap) {
+    const sku = obj.sku;
+    const keep = keepMap[sku] || {};
+    const arr = new Array(finalHdr.length).fill('');
+    for (let i = 0; i < finalHdr.length; i++) {
+      const col = String(finalHdr[i]||'').toLowerCase();
+      if (importSet.has(col)) arr[i] = obj[col] != null ? obj[col] : '';
+      else arr[i] = keep[col] != null ? keep[col] : '';
+    }
+    return arr;
+  }
+
+  // Update existing
+  const nameToIndex = indexer_(hdr, hdr);
+  const skuToRow = {};
+  for (let r = 1; r < existing.length; r++) {
+    const s = String(existing[r][skuCol]||'').trim();
+    if (s) skuToRow[s] = r;
+  }
+  for (const obj of rows) {
+    if (skuToRow[obj.sku] != null) {
+      const rowIdx = skuToRow[obj.sku];
+      const arr = renderRow(obj, keepBySku);
+      sheet.getRange(rowIdx + 1, 1, 1, finalHdr.length).setValues([arr]);
+    } else {
+      newRows.push(renderRow(obj, keepBySku));
+    }
+  }
+
+  // Append new rows in bulk
+  if (newRows.length) {
+    const start = sheet.getLastRow() + 1;
+    sheet.getRange(start, 1, newRows.length, finalHdr.length).setValues(newRows);
+  }
+
+  ui.alert(`Imported product ${pid}. Updated: ${rows.length - newRows.length}, Added: ${newRows.length}`);
+}
+
+function ecwid_fetchProductById_(productId) {
+  const { storeId, token } = ecwid_creds_();
+  const url = `https://app.ecwid.com/api/v3/${storeId}/products/${productId}?showVariants=true`;
+  const resp = UrlFetchApp.fetch(url, { method: 'get', headers: { Authorization: `Bearer ${token}` }, muteHttpExceptions: true });
+  if (resp.getResponseCode() !== 200) return null;
+  return JSON.parse(resp.getContentText() || '{}');
+}
+
+// Format optionValues array to a string
+function ecwid_formatOptionValues_(optionValues) {
+  if (!Array.isArray(optionValues) || !optionValues.length) return '';
+  return optionValues.map(function(opt) {
+    if (opt.optionName && opt.optionValue) {
+      return opt.optionName + ':' + opt.optionValue;
+    }
+    return '';
+  }).filter(Boolean).join('; ');
 }

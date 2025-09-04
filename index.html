@@ -140,10 +140,21 @@
       $('submitBtn').disabled = !ok;
     }
 
+    function renderProductImage(url, name) {
+      const box = $('pImgBox');
+      if (!box) return;
+      if (url && typeof url === 'string') {
+        box.innerHTML = `<img src="${url}" alt="${(name || 'Product image').replace(/"/g,'') }" style="max-width:100%; max-height:100%; object-fit:contain; border-radius:10px;" loading="lazy">`;
+      } else {
+        box.textContent = 'No image';
+      }
+    }
+
     // ---- Product fetch via fetch()
     function fetchProduct() {
       setStatus($('fetchStatus'), 'Loading…', '');
       $('prodCard').style.display = 'none';
+      renderProductImage(null, null);
       state.product = null;
       setSubmitEnabled();
 
@@ -161,6 +172,7 @@
           $('pLoc').textContent   = data.location ? `Loc: ${data.location}` : '';
           $('pStock').textContent = data.current_stock ?? '—';
           $('pMin').textContent   = data.min_stock ?? '—';
+          renderProductImage(data.image_url, data.name);
           $('prodCard').style.display = 'block';
           setStatus($('fetchStatus'), 'Product loaded.', 'status-ok');
           setSubmitEnabled();
