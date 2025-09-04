@@ -1,0 +1,130 @@
+
+/***** UI POLISH PACK *****/
+
+/* 1) Base rhythm & typography */
+:root {
+  --pad: 12px;            /* slightly tighter */
+  --radius: 12px;
+  --gap: 10px;
+  --fs: 16px;
+  --brand: #111;          /* primary button/background */
+  --brand-cta: #2d6cdf;   /* optional accent (links/badges) */
+  --ok: #0b6b3a;
+  --warn: #8a4b00;
+  --err: #8a0010;
+}
+
+html { -webkit-text-size-adjust: 100%; }
+html, body { height: 100%; }
+body { font-size: var(--fs); line-height: 1.35; background:#f6f7f9; }
+
+/* 2) Cards, spacing, headings */
+.wrap { max-width: 720px; margin: 0 auto; padding: 14px; }
+.card { background:#fff; border-radius: var(--radius); padding: var(--pad) calc(var(--pad) + 2px); box-shadow: 0 1px 6px rgba(0,0,0,.06); margin-bottom: 12px; }
+h1 { font-size: 20px; margin: 2px 0 6px; letter-spacing: .2px; text-align: center; }
+.muted { color:#555; font-size: 13px; }
+
+/* 3) Form grid & controls */
+.row { display:flex; gap: var(--gap); flex-wrap: wrap; align-items: center; }
+.col { flex:1; min-width: 150px; }
+label { display:block; font-size:13px; color:#222; margin: 2px 0 6px; font-weight: 600; }
+
+input, select {
+  width:100%; height:48px; padding: 10px 12px;
+  border-radius: 12px; border:1px solid #d6dbe2; background:#fff; font-size:16px;
+  outline: none; transition: border-color .15s ease, box-shadow .15s ease;
+}
+input:focus, select:focus { border-color:#b3c1d8; box-shadow: 0 0 0 3px rgba(45,108,223,.12); }
+input::placeholder { color:#999; }
+
+/* 4) Buttons */
+.btn, .btn-light, .btn-outline {
+  height:48px; border-radius: 12px; padding: 0 16px; font-weight:700; font-size:16px; cursor:pointer;
+}
+.btn { background: var(--brand); color:#fff; border:0; }
+.btn:disabled { opacity:.5; cursor:not-allowed; }
+.btn-light { background:#eef1f6; color:#111; border:0; }
+.btn-outline { background:#fff; color:#111; border:1px solid #d6dbe2; }
+
+/* Full-width Scan button */
+#btnScan {
+  width: 100%;
+  display: block;
+}
+
+/* Make the primary action stand out */
+#submitBtn { background:#111; }
+#submitBtn:not(:disabled):active { transform: translateY(1px); }
+
+/* 5) Quantity control */
+.qty-wrap { display:flex; align-items:center; gap:10px; }
+.qty-btn {
+  width:52px; height:52px; border-radius:12px; border:1px solid #d6dbe2;
+  background:#f3f5f9; font-size:26px; font-weight:800; line-height:1; cursor:pointer;
+}
+.qty-input {
+  width:100%; text-align:center; font-size:24px; font-weight:800;
+  border:1px solid #d6dbe2; border-radius:12px; padding: 10px 8px; background:#fff;
+}
+
+/* Remove number input spinners */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; }
+
+/* 6) Status toasts */
+.status { border-radius:12px; padding:10px 12px; font-size:14px; margin-top:12px; white-space:pre-wrap; }
+.status-ok   { background:#e7f8ef; border:1px solid #bfead1; color: var(--ok); }
+.status-warn { background:#fff6e5; border:1px solid #ffe0a6; color: var(--warn); }
+.status-err  { background:#fde8e7; border:1px solid #ffb9b4; color: var(--err); }
+
+/* 7) Pills & KPIs */
+.pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#eef1f6; font-size:12px; color:#444; margin-right:6px; }
+
+/* 8) Align SKU buttons */
+#btnFetch, #btnScan { white-space: nowrap; }
+
+/* SKU input and Fetch button ratio */
+.sku-row { display: flex; gap: var(--gap); }
+.sku-row input { flex: 3; }
+.sku-row button { flex: 2; }
+
+/* 9) Scanner container */
+#reader { width:100%; max-width: 100% !important; }
+
+/* 10) Optional visual cue for +/- selection */
+.is-decrease .qty-input, .is-decrease .qty-btn { border-color:#ffd1cf; background:#fff3f2; }
+.is-increase .qty-input, .is-increase .qty-btn { border-color:#cdebd1; background:#eefaf0; }
+
+/* 11) Small-screen tweaks */
+@media (max-width: 480px) {
+  .wrap  { padding: 10px; }
+  .card  { padding: 12px; margin-bottom: 10px; }
+  h1     { font-size: 18px; }
+  .qty-btn { width:48px; height:48px; font-size:24px; }
+  .qty-input { font-size:22px; }
+}
+
+/* 12) Prevent horizontal scroll */
+html, body { overflow-x: hidden; }
+* { box-sizing: border-box; }
+img, canvas, video { max-width:100%; height:auto; }
+/* Additions from inline styles */
+
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  margin: 0;
+  color: #111;
+}
+
+/* Scanner UI wrapper + footer */
+#scannerWrap { display: none; margin-top: 10px; }
+.footer { text-align: center; font-size: 12px; color: #888; margin: 24px 0 12px; }
+
+/* Center the QR reader container */
+#reader { margin: 0 auto; }
+
+/* Safe-area padding at the bottom for iOS */
+@supports (padding: max(0px)) {
+  body { padding-bottom: max(env(safe-area-inset-bottom), 8px); }
+}

@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111" />
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="./style.css">
+  <base target="_top">
+  <title>Factory Inventory — Mobile</title>
+  <!-- QR library -->
+  <script src="https://unpkg.com/html5-qrcode" defer></script>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>3DPrintronics Inventory</h1>
+      <div class="muted">Scan a QR or type the SKU, adjust quantity, and submit.</div>
+    </div>
+
+    <!-- Picker identity -->
+    <div class="card">
+      <div class="row">
+        <div class="col">
+          <label for="pickerName">Employee Name</label>
+          <input id="pickerName" placeholder="e.g. Amit" autocomplete="name" autofocus />
+        </div>
+        <div class="col">
+          <label for="location">Rack</label>
+          <input id="location" value="MAIN" />
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <button type="button" class="btn" id="btnScan">Scan Product QR</button>
+      </div>
+    </div>
+
+    <!-- Product lookup -->
+    <div class="card">
+      <label for="sku">SKU</label>
+      <div class="row sku-row" style="align-items:flex-end;">
+        <input id="sku" placeholder="Enter SKU (exact)" />
+        <button type="button" class="btn btn-light" id="btnFetch">Fetch</button>
+      </div>
+
+      <!-- Scanner UI -->
+      <div id="scannerWrap">
+        <div class="muted" style="margin:8px 0;">Point camera at QR (format: <code>SKU|VARIANT|LOCATION</code>).</div>
+        <div id="reader"></div>
+        <div style="margin-top:8px; display:flex; gap:8px;">
+          <button type="button" class="btn btn-light" id="btnStopScan">Stop camera</button>
+          <button type="button" class="btn btn-outline" id="btnSwitchCam" style="display:none;">Switch camera</button>
+        </div>
+        <div id="scanStatus" class="status" style="display:none;" aria-live="polite"></div>
+      </div>
+
+      <div id="prodCard" style="display:none; margin-top:12px;">
+        <!-- Top row: Name full width -->
+        <div style="margin-bottom:10px;">
+          <div class="pill" id="pName" style="display:block; font-weight:700; font-size:16px;"></div>
+        </div>
+
+        <!-- Second row: left = Loc/Current/Min, right = image placeholder -->
+        <div class="row" style="align-items:stretch; gap:12px;">
+          <div class="col">
+            <div class="pill" id="pLoc">Loc: —</div>
+            <div class="row" style="margin-top:8px; gap:10px;">
+              <div class="col"><div class="pill">Current: <b id="pStock">—</b></div></div>
+              <div class="col"><div class="pill">Min: <b id="pMin">—</b></div></div>
+            </div>
+          </div>
+          <div class="col" style="flex:0 0 108px; max-width:108px;">
+            <div id="pImgBox" style="width:100%; aspect-ratio:1; background:#eef1f6; border:1px solid #d6dbe2; border-radius:12px; display:flex; align-items:center; justify-content:center; color:#666; font-size:12px;">
+              Image
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="fetchStatus" class="status" style="display:none;" aria-live="polite"></div>
+    </div>
+
+    <!-- Quantity + Reason -->
+    <div class="card">
+      <label for="qty">Quantity change</label>
+      <div class="qty-wrap" style="margin:8px 0 14px;">
+        <button type="button" class="qty-btn" id="decBtn" aria-label="Decrease quantity">−</button>
+        <input id="qty" class="qty-input" type="number" value="0" step="1" inputmode="numeric" pattern="[0-9]*" min="0" />
+        <button type="button" class="qty-btn" id="incBtn" aria-label="Increase quantity">+</button>
+      </div>
+
+      <div class="row">
+        <div class="col">
+          <label for="reason">Reason</label>
+          <select id="reason">
+            <option value="pick">pick (–)</option>
+            <option value="pack">pack (–)</option>
+            <option value="adjust">adjust (+/–)</option>
+            <option value="return">return (+)</option>
+          </select>
+        </div>
+        <div class="col">
+          <label for="note">Note (optional)</label>
+          <input id="note" placeholder="Order #123, etc." />
+        </div>
+      </div>
+
+      <div id="txStatus" class="status" style="display:none;" aria-live="polite"></div>
+
+      <div class="row" style="margin-top:14px;">
+        <button type="button" class="btn" id="submitBtn" disabled>Submit transaction</button>
+      </div>
+      <div class="muted" style="margin-top:8px;">Submit activates when picker name is filled, a product is fetched, and quantity ≠ 0.</div>
+    </div>
+
+    <div class="footer">3DPrintronics • v1</div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { product: null, scanner: null, cameras: [], camIdx: 0 };
+
+    function setStatus(el, msg, kind) {
+      el.style.display = msg ? 'block' : 'none';
+      el.className = 'status ' + (kind || '');
+      el.textContent = msg || '';
+    }
+
+    function setSubmitEnabled() {
+      const ok =
+        !!$('pickerName').value.trim() &&
+        !!$('sku').value.trim() &&
+        Number.isFinite(Number($('qty').value)) &&
+        Number($('qty').value) !== 0 &&
+        !!state.product;
+      $('submitBtn').disabled = !ok;
+    }
+
+    // ---- Product fetch via google.script.run (no CORS, stable across deploys)
+    function fetchProduct() {
+      setStatus($('fetchStatus'), 'Loading…', '');
+      $('prodCard').style.display = 'none';
+      state.product = null;
+      setSubmitEnabled();
+
+      const sku = $('sku').value.trim();
+      if (!sku) {
+        setStatus($('fetchStatus'), 'Enter a SKU first.', 'status-err');
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler((data) => {
+          state.product = data;
+          $('pName').textContent  = data.name ?? '';
+          $('pLoc').textContent   = data.location ? `Loc: ${data.location}` : '';
+          $('pStock').textContent = data.current_stock ?? '—';
+          $('pMin').textContent   = data.min_stock ?? '—';
+          $('prodCard').style.display = 'block';
+          setStatus($('fetchStatus'), 'Product loaded.', 'status-ok');
+          setSubmitEnabled();
+        })
+        .withFailureHandler((err) => {
+          setStatus($('fetchStatus'), String(err), 'status-err');
+          setSubmitEnabled();
+        })
+        .api_getProduct(sku);
+    }
+
+    function nudgeQty(delta) {
+      const cur = Number($('qty').value) || 0;
+      $('qty').value = cur + delta;
+      setSubmitEnabled();
+    }
+
+    function submitTx() {
+      if (!state.product) return;
+
+      const picker   = $('pickerName').value.trim();
+      const sku      = $('sku').value.trim();
+      const qty      = Number($('qty').value);
+      const reason   = $('reason').value;
+      const note     = $('note').value.trim();
+      const location = $('location').value.trim() || 'MAIN';
+
+      let qty_change = qty;
+      if (reason === 'pick' || reason === 'pack') qty_change = Math.abs(qty) * -1;
+      if (reason === 'return')                     qty_change = Math.abs(qty);
+
+      if (!picker || !sku || !qty_change || qty_change === 0) return;
+
+      setStatus($('txStatus'), 'Submitting…', '');
+      $('submitBtn').disabled = true;
+
+      const payload = { user: picker, sku, variant_key: '', location, qty_change, reason, note };
+
+      google.script.run
+        .withSuccessHandler((data) => {
+          if (data && data.ok) {
+            $('pStock').textContent = data.new_stock;
+            setStatus($('txStatus'), data.warning || 'Transaction saved.', data.warning ? 'status-warn' : 'status-ok');
+            $('qty').value = 0;
+            $('note').value = '';
+          } else {
+            setStatus($('txStatus'), (data && (data.error || data.details)) ? JSON.stringify(data).slice(0, 300) : 'Failed to save.', 'status-err');
+          }
+          $('submitBtn').disabled = false;
+          setSubmitEnabled();
+        })
+        .withFailureHandler((err) => {
+          setStatus($('txStatus'), String(err), 'status-err');
+          $('submitBtn').disabled = false;
+          setSubmitEnabled();
+        })
+        .api_createTx(payload);
+    }
+
+    // ---- QR scanner
+    async function startScanner() {
+      if (!window.Html5Qrcode) {
+        setStatus($('fetchStatus'), 'Scanner library not loaded. Check network.', 'status-err');
+        return;
+      }
+      try {
+        $('scannerWrap').style.display = 'block';
+        setStatus($('scanStatus'), 'Opening camera…', '');
+        // List cameras
+        state.cameras = await Html5Qrcode.getCameras();
+        $('btnSwitchCam').style.display = state.cameras.length > 1 ? 'inline-block' : 'none';
+        const camId = state.cameras[state.camIdx]?.id || { facingMode: "environment" };
+
+        state.scanner = new Html5Qrcode('reader', { formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ] });
+
+        const config = { fps: 10, qrbox: { width: 240, height: 240 } };
+        await state.scanner.start(camId, config, onScanSuccess, onScanError);
+        setStatus($('scanStatus'), 'Camera ready. Point at the QR.', 'status-ok');
+      } catch (err) {
+        setStatus($('scanStatus'), 'Camera error: ' + String(err), 'status-err');
+      }
+    }
+
+    function stopScanner() {
+      if (state.scanner) {
+        state.scanner.stop().then(() => {
+          state.scanner.clear();
+          state.scanner = null;
+        }).catch(() => {});
+      }
+      $('scannerWrap').style.display = 'none';
+      setStatus($('scanStatus'), '', '');
+    }
+
+    function switchCamera() {
+      if (!state.cameras.length) return;
+      state.camIdx = (state.camIdx + 1) % state.cameras.length;
+      // Restart scanner with new camera
+      if (state.scanner) {
+        state.scanner.stop().then(() => {
+          state.scanner.clear();
+          state.scanner = null;
+          startScanner();
+        });
+      }
+    }
+
+    // Called on successful QR read
+    function onScanSuccess(decodedText) {
+      // Expected format: sku|variant|location
+      const parts = String(decodedText).split('|');
+      const sku = (parts[0] || '').trim();
+      const variant = (parts[1] || '').trim();
+      const location = (parts[2] || '').trim();
+
+      if (!sku) {
+        setStatus($('scanStatus'), 'Invalid QR: missing SKU.', 'status-err');
+        return;
+      }
+
+      $('sku').value = sku;
+      if (location) $('location').value = location;
+
+      // Stop camera and fetch
+      stopScanner();
+      fetchProduct();
+    }
+
+    function onScanError(err) {
+      // We’ll keep it quiet; frequent scan errors are normal while searching.
+    }
+
+    // Wire up events
+    window.addEventListener('DOMContentLoaded', () => {
+      $('btnFetch').addEventListener('click', fetchProduct);
+      $('btnScan').addEventListener('click', startScanner);
+      $('btnStopScan').addEventListener('click', stopScanner);
+      $('btnSwitchCam').addEventListener('click', switchCamera);
+
+      $('incBtn').addEventListener('click', () => nudgeQty(+1));
+      $('decBtn').addEventListener('click', () => nudgeQty(-1));
+      $('qty').addEventListener('input', setSubmitEnabled);
+      $('pickerName').addEventListener('input', setSubmitEnabled);
+      $('sku').addEventListener('input', setSubmitEnabled);
+      $('submitBtn').addEventListener('click', submitTx);
+
+      $('sku').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); fetchProduct(); }
+      });
+    });
+  </script>
+</body>
+</html>
