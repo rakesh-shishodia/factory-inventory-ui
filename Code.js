@@ -2,15 +2,19 @@
 const SHEET_PRODUCTS = 'Products';
 const SHEET_TX       = 'Transactions';
 const SHEET_SYNC     = 'SyncQueue';
+const SHEET_EMPLOYEES = 'Employees';
 
 // Cache settings for getProduct (per-SKU). TTL 10 minutes.
 const CACHE_TTL_SEC    = 600;
 const CACHE_KEY_PREFIX = 'prod:'; // key = 'prod:' + sku
+const CACHE_EMP_KEY    = 'employees:list';
+const CACHE_EMP_TTLSEC = 3600; // 1 hour
 
 /**** WEB ENTRYPOINTS ****/
 function doGet(e) {
   const action = e && e.parameter ? e.parameter.action : null;
   if (action === 'getProduct') return getProductHandler(e); // keep HTTP GET for testing
+  if (action === 'getEmployees') return getEmployeesHandler(e);
 
   // Serve templated HTML so <?!= ... ?> is processed
   const t = HtmlService.createTemplateFromFile('mobile');
@@ -109,6 +113,28 @@ function coreGetProductBySku_(sku) {
   throw new Error('SKU not found');
 }
 
+function coreGetEmployees_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get(CACHE_EMP_KEY);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (_) { /* fall through */ }
+  }
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_EMPLOYEES);
+  if (!sh) throw new Error(`Missing sheet "${SHEET_EMPLOYEES}"`);
+  const values = sh.getDataRange().getValues();
+  if (!values.length) return [];
+  const hdr = values[0].map(v => String(v||'').toLowerCase());
+  const nameIdx = hdr.indexOf('name');
+  if (nameIdx < 0) throw new Error('Employees sheet must have a "name" header');
+  const names = [];
+  for (let r = 1; r < values.length; r++) {
+    const n = String(values[r][nameIdx] || '').trim();
+    if (n) names.push(n);
+  }
+  try { cache.put(CACHE_EMP_KEY, JSON.stringify(names), CACHE_EMP_TTLSEC); } catch (_) {}
+  return names;
+}
+
 function coreCreateTx_(data) {
   const ss        = SpreadsheetApp.getActive();
   const txSheet   = ss.getSheetByName(SHEET_TX);
@@ -171,6 +197,17 @@ function getProductHandler(e) {
     return ContentService.createTextOutput(JSON.stringify(row)).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({ error: String(err) })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function getEmployeesHandler(e) {
+  try {
+    const names = coreGetEmployees_();
+    return ContentService.createTextOutput(JSON.stringify({ names }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ error: String(err) }))
+      .setMimeType(ContentService.MimeType.JSON);
   }
 }
 

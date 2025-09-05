@@ -25,7 +25,7 @@
       <div class="row">
         <div class="col">
           <label for="pickerName">Employee Name</label>
-          <input id="pickerName" placeholder="e.g. Amit" autocomplete="name" autofocus />
+          <select id="pickerName"></select>
         </div>
         <div class="col">
           <label for="location">Rack</label>
@@ -187,6 +187,50 @@
       } else {
         box.textContent = 'No image';
       }
+    }
+
+    // ---- Employees list fetch/cache
+    async function loadEmployees() {
+      try {
+        // Check localStorage cache
+        const cached = localStorage.getItem('employees_cache');
+        const ts     = Number(localStorage.getItem('employees_cache_ts') || 0);
+        const ageSec = (Date.now() - ts) / 1000;
+        if (cached && ageSec < 86400) {
+          populateEmployees(JSON.parse(cached));
+          return;
+        }
+
+        const resp = await fetch(`${APPS_SCRIPT_BASE}?action=getEmployees`);
+        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+        const data = await resp.json();
+        if (data && Array.isArray(data.names)) {
+          localStorage.setItem('employees_cache', JSON.stringify(data.names));
+          localStorage.setItem('employees_cache_ts', String(Date.now()));
+          populateEmployees(data.names);
+        }
+      } catch (err) {
+        console.error('Employee load failed', err);
+      }
+    }
+
+    function populateEmployees(names) {
+      const sel = $('pickerName');
+      sel.innerHTML = '';
+      const last = localStorage.getItem('employee_last');
+      names.forEach(n => {
+        const opt = document.createElement('option');
+        opt.value = n;
+        opt.textContent = n;
+        if (last && last === n) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      // store last selection when changed
+      sel.addEventListener('change', () => {
+        localStorage.setItem('employee_last', sel.value);
+        setSubmitEnabled();
+      });
+      setSubmitEnabled();
     }
 
     // ---- Product fetch via fetch()
@@ -356,6 +400,7 @@
 
     // Wire up events
     window.addEventListener('DOMContentLoaded', () => {
+      loadEmployees();
       $('btnFetch').addEventListener('click', fetchProduct);
       $('btnScan').addEventListener('click', startScanner);
       $('btnStopScan').addEventListener('click', stopScanner);
@@ -364,7 +409,7 @@
       $('incBtn').addEventListener('click', () => nudgeQty(+1));
       $('decBtn').addEventListener('click', () => nudgeQty(-1));
       $('qty').addEventListener('input', setSubmitEnabled);
-      $('pickerName').addEventListener('input', setSubmitEnabled);
+      // $('pickerName').addEventListener('input', setSubmitEnabled); // not needed, handled in populateEmployees
       $('sku').addEventListener('input', setSubmitEnabled);
       $('submitBtn').addEventListener('click', submitTx);
 
