@@ -140,6 +140,45 @@
       $('submitBtn').disabled = !ok;
     }
 
+    function focusSku() {
+      const el = $('sku');
+      if (el) { el.focus(); el.select && el.select(); }
+    }
+
+    function clearProductPanel() {
+      $('pName').textContent  = '';
+      $('pLoc').textContent   = '';
+      $('pStock').textContent = '—';
+      $('pMin').textContent   = '—';
+      renderProductImage(null, null);
+      $('prodCard').style.display = 'none';
+      state.product = null;
+    }
+
+    function resetUIAfterSuccess(message) {
+      // Show success toast
+      setStatus($('txStatus'), message || 'Saved. Scan next item.', 'status-ok');
+      setStatus($('fetchStatus'), '', '');
+      setStatus($('scanStatus'),  '', '');
+
+      // Clear transaction inputs
+      $('sku').value = '';
+      $('qty').value = '';
+      $('reason').value = 'pick';
+      $('note').value = '';
+
+      // Clear product info and disable submit until refetch
+      clearProductPanel();
+      setSubmitEnabled();
+
+      // Prefer scanner; fall back to focusing SKU if camera cannot start
+      try {
+        startScanner();
+      } catch (e) {
+        focusSku();
+      }
+    }
+
     function renderProductImage(url, name) {
       const box = $('pImgBox');
       if (!box) return;
@@ -157,6 +196,7 @@
       renderProductImage(null, null);
       state.product = null;
       setSubmitEnabled();
+      $('submitBtn').disabled = true;
 
       const sku = $('sku').value.trim();
       if (!sku) {
@@ -225,14 +265,12 @@
         .then(r => r.ok ? r.json() : Promise.reject(`${r.status} ${r.statusText}`))
         .then((data) => {
           if (data && data.ok) {
-            $('pStock').textContent = data.new_stock;
-            setStatus($('txStatus'), data.warning || 'Transaction saved.', data.warning ? 'status-warn' : 'status-ok');
-            $('qty').value = 0;
-            $('note').value = '';
+            // Clear/Reset UI to prevent accidental repeat on same SKU
+            resetUIAfterSuccess(data.warning || 'Saved. Scan next item.');
           } else {
             setStatus($('txStatus'), (data && (data.error || data.details)) ? JSON.stringify(data).slice(0, 300) : 'Failed to save.', 'status-err');
           }
-          $('submitBtn').disabled = false;
+          $('submitBtn').disabled = true; // keep disabled until new fetch/scan
           setSubmitEnabled();
         })
         .catch((err) => {
