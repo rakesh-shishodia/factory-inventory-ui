@@ -131,3 +131,9 @@ body {
 @supports (padding: max(0px)) {
   body { padding-bottom: max(env(safe-area-inset-bottom), 8px); }
 }
+
+
+/* Force SKU input to display uppercase */
+#sku {
+  text-transform: uppercase;
+}

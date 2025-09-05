@@ -41,7 +41,7 @@
     <div class="card">
       <label for="sku">SKU</label>
       <div class="row sku-row" style="align-items:flex-end;">
-        <input id="sku" placeholder="Enter SKU (exact)" />
+        <input id="sku" placeholder="Enter SKU (exact)" autocapitalize="characters" />
         <button type="button" class="btn btn-light" id="btnFetch">Fetch</button>
       </div>
 
@@ -437,7 +437,16 @@
       $('decBtn').addEventListener('click', () => nudgeQty(-1));
       $('qty').addEventListener('input', setSubmitEnabled);
       // $('pickerName').addEventListener('input', setSubmitEnabled); // not needed, handled in populateEmployees
-      $('sku').addEventListener('input', setSubmitEnabled);
+      $('sku').addEventListener('input', (e) => {
+        const el = e.target;
+        const prevPos = el.selectionStart;
+        const up = (el.value || '').toUpperCase();
+        if (el.value !== up) {
+          el.value = up;
+          try { el.setSelectionRange(prevPos, prevPos); } catch (_) {}
+        }
+        setSubmitEnabled();
+      });
       $('reason').addEventListener('change', setSubmitEnabled);
       $('note').addEventListener('input', setSubmitEnabled);
       $('submitBtn').addEventListener('click', submitTx);
