@@ -154,7 +154,8 @@ function coreCreateTx_(data) {
   if (newStock === null) throw new Error('SKU not found in Products');
 
   // 3) Queue Ecwid sync
-  syncSheet.appendRow([ts, sku, newStock, 'queued', '']);
+  const allowRaise = (Number(qty_change) || 0) > 0; // positive transactions allow raises
+  syncSheet.appendRow([ts, sku, newStock, allowRaise, 'queued', '']);
 
   return { ok: true, sku, new_stock: newStock, warning: newStock < 0 ? 'Stock is negative!' : null };
 }
@@ -253,7 +254,7 @@ function ecwid_pushQueued() {
 
   const syncRows   = syncSheet.getDataRange().getValues();
   const shdr       = syncRows[0];
-  const sidx       = indexer_(shdr, ['ts','sku','target_stock','status','last_error']);
+  const sidx       = indexer_(shdr, ['ts','sku','target_stock','allow_raise','status','last_error']);
 
   let ok = 0, skipped = 0, errors = 0;
 
@@ -263,6 +264,9 @@ function ecwid_pushQueued() {
 
     const sku         = String(syncRows[r][sidx['sku']] || '').trim();
     const targetStock = Number(syncRows[r][sidx['target_stock']]);
+    const allowRaw    = sidx['allow_raise'] >= 0 ? syncRows[r][sidx['allow_raise']] : false;
+    const allowStr    = String(allowRaw).toLowerCase();
+    const allowRaise  = (allowRaw === true) || allowStr === 'true' || allowStr === '1' || allowStr === 'yes' || allowStr === 'y';
 
     // 1) Find product row by SKU
     const prow = findRowBySku_(prodRows, pidx[COL_SKU], sku);
@@ -286,8 +290,18 @@ function ecwid_pushQueued() {
       errors++; continue;
     }
 
-    // 3) Compute delta (Ecwid inventory endpoint expects quantityDelta)
-    const delta = Number(targetStock) - Number(cur);
+    // 3) Compute target per policy
+    let target;
+    if (allowRaise) {
+      // additions: allow raise or lower to match sheet (clamped at 0)
+      target = Math.max(0, Number(targetStock));
+    } else {
+      // default min-rule: never raise Ecwid, only lower (clamped at 0)
+      target = Math.max(0, Math.min(Number(targetStock), Number(cur)));
+    }
+
+    // Ecwid inventory endpoint expects quantityDelta
+    const delta = target - Number(cur);
     if (!Number.isFinite(delta)) {
       setSyncRow_(syncSheet, r, sidx, 'error', `Invalid target/current for ${sku}: ${targetStock}/${cur}`);
       errors++; continue;
