@@ -292,7 +292,8 @@
         // List cameras
         state.cameras = await Html5Qrcode.getCameras();
         $('btnSwitchCam').style.display = state.cameras.length > 1 ? 'inline-block' : 'none';
-        const camId = state.cameras[state.camIdx]?.id || { facingMode: "environment" };
+        // Prefer back camera by default on mobile
+        const camId = { facingMode: "environment" };
 
         state.scanner = new Html5Qrcode('reader', { formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ] });
 
