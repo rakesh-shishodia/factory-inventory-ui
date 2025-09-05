@@ -195,9 +195,7 @@ const SP_ECWID_TOKEN    = 'ECWID_TOKEN';
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Ecwid Sync')
-    .addItem('2) Push queued to Ecwid',  'ecwid_pushQueued')
-    .addSeparator()
-    .addItem('Test Auth',                'ecwid_testAuth')
+    .addItem('Push queued to Ecwid',  'ecwid_pushQueued')
     .addSeparator()
     .addItem('Refresh Catalog from Ecwid', 'ecwid_refreshCatalog')
     .addItem('Import product by ID…',    'ecwid_importProductById')
@@ -317,17 +315,6 @@ function setSyncRow_(sheet, r, sidx, status, errMsg) {
 
 /**** ECWID API LAYER ****/
 
-function ecwid_testAuth() {
-  const { storeId, token } = ecwid_creds_();
-  const url = `https://app.ecwid.com/api/v3/${storeId}/profile`;
-  const resp = UrlFetchApp.fetch(url, {
-    method: 'get',
-    headers: { Authorization: `Bearer ${token}` },
-    muteHttpExceptions: true,
-  });
-  const code = resp.getResponseCode();
-  SpreadsheetApp.getUi().alert(`Auth test HTTP ${code}`);
-}
 
 
 function ecwid_getCurrentQty_(productId, combinationId) {
