@@ -1,6 +1,3 @@
-
-
-
 # Baseline Notes — Inventory Management System
 
 This document records the state of the project after reverting to commit **f2d8639** and cleaning up the Google Sheets configuration.
@@ -18,6 +15,11 @@ This document records the state of the project after reverting to commit **f2d86
   - Removed validation from `allow_raise` column (to avoid auto-filled FALSE values).
   - Manually deleted ghost rows that caused appendRow() to write at the bottom.
   - Headers protected and first row frozen.
+- **Employees** sheet:
+  - Contains a single column `name` listing employee names.
+  - This list is used to populate the Employee Name dropdown in the mobile UI.
+  - To add/remove employees, simply edit this sheet (delete row to remove, add row to add).
+  - Changes are cached for 24h in the UI but will auto-refresh after that period.
 
 ## Status
 System is confirmed working:
