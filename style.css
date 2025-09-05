@@ -101,7 +101,7 @@ input[type="number"] { -moz-appearance: textfield; }
   .wrap  { padding: 10px; }
   .card  { padding: 12px; margin-bottom: 10px; }
   h1     { font-size: 18px; }
-  .qty-btn { width:48px; height:48px; font-size:24px; }
+  .qty-btn { width:64px; height:48px; font-size:24px; }
   .qty-input { font-size:22px; }
 }
 
