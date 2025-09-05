@@ -195,7 +195,6 @@ const SP_ECWID_TOKEN    = 'ECWID_TOKEN';
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Ecwid Sync')
-    .addItem('1) Backfill IDs (by SKU)', 'ecwid_backfillIdsBySku')
     .addItem('2) Push queued to Ecwid',  'ecwid_pushQueued')
     .addSeparator()
     .addItem('Test Auth',                'ecwid_testAuth')
@@ -207,38 +206,6 @@ function onOpen() {
 
 /**** PUBLIC ACTIONS ****/
 
-// 1) Resolve product_id / combination_id for all SKUs in Products
-function ecwid_backfillIdsBySku() {
-  const ss     = SpreadsheetApp.getActive();
-  const sheet  = ss.getSheetByName(SHEET_PRODUCTS);
-  const rows   = sheet.getDataRange().getValues();
-  const header = rows[0];
-  const idx = indexer_(header, [COL_SKU, COL_PROD_ID, COL_COMB_ID]);
-
-  // Build a map of SKU -> row index
-  const updates = [];
-  for (let r = 1; r < rows.length; r++) {
-    const sku = String(rows[r][idx[COL_SKU]] || '').trim();
-    if (!sku) continue;
-
-    const hasProdId = rows[r][idx[COL_PROD_ID]];
-    // Always (re)lookup if missing product_id
-    if (!hasProdId) {
-      const info = ecwid_lookupBySku_(sku);
-      if (info) {
-        updates.push({ r, productId: info.productId, combinationId: info.combinationId || '' });
-      }
-    }
-  }
-
-  // Write back
-  updates.forEach(u => {
-    if (idx[COL_PROD_ID] >= 0) sheet.getRange(u.r + 1, idx[COL_PROD_ID] + 1).setValue(u.productId);
-    if (idx[COL_COMB_ID] >= 0) sheet.getRange(u.r + 1, idx[COL_COMB_ID] + 1).setValue(u.combinationId);
-  });
-
-  SpreadsheetApp.getUi().alert(`Backfill complete.\nResolved ${updates.length} SKU(s).`);
-}
 
 // 2) Push queued SyncQueue rows (status="queued") to Ecwid
 function ecwid_pushQueued() {
@@ -362,37 +329,6 @@ function ecwid_testAuth() {
   SpreadsheetApp.getUi().alert(`Auth test HTTP ${code}`);
 }
 
-function ecwid_lookupBySku_(sku) {
-  const { storeId, token } = ecwid_creds_();
-  const base = `https://app.ecwid.com/api/v3/${storeId}/products`;
-  const url = `${base}?sku=${encodeURIComponent(sku)}&showVariants=true`;
-  const resp = UrlFetchApp.fetch(url, {
-    method: 'get',
-    headers: { Authorization: `Bearer ${token}` },
-    muteHttpExceptions: true,
-  });
-  if (resp.getResponseCode() !== 200) return null;
-
-  const json = JSON.parse(resp.getContentText() || '{}');
-  const items = json.items || [];
-
-  // A) product-level SKU
-  for (const p of items) {
-    if (String(p.sku || '') === sku) {
-      return { productId: p.id, combinationId: null };
-    }
-  }
-  // B) variant-level SKU
-  for (const p of items) {
-    const combs = p.combinations || [];
-    for (const c of combs) {
-      if (String(c.sku || '') === sku) {
-        return { productId: p.id, combinationId: c.id };
-      }
-    }
-  }
-  return null;
-}
 
 function ecwid_getCurrentQty_(productId, combinationId) {
   const { storeId, token } = ecwid_creds_();
