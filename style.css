@@ -59,7 +59,7 @@ input::placeholder { color:#999; }
 /* 5) Quantity control */
 .qty-wrap { display:flex; align-items:center; gap:10px; }
 .qty-btn {
-  width:52px; height:52px; border-radius:12px; border:1px solid #d6dbe2;
+  width:72px; height:52px; border-radius:12px; border:1px solid #d6dbe2;
   background:#f3f5f9; font-size:26px; font-weight:800; line-height:1; cursor:pointer;
 }
 .qty-input {
