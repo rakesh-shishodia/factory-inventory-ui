@@ -95,10 +95,11 @@
         <div class="col">
           <label for="reason">Reason</label>
           <select id="reason">
-            <option value="pick">Out (–)</option>
-            <option value="pack">pack (–)</option>
-            <option value="adjust">adjust (+/–)</option>
-            <option value="return">In (+)</option>
+            <option value="pick">Sales (–)</option>
+            <option value="pack">Internal Use (–)</option>
+            <option value="return">Re-Stock (+)</option>
+            <option value="adjustUp">Adjust Up (+)</option>
+            <option value="adjustDown">Adjust Down (–)</option>
           </select>
         </div>
         <div class="col">
@@ -106,6 +107,8 @@
           <input id="note" placeholder="Order #123, etc." />
         </div>
       </div>
+
+      <div id="stockPreview" class="muted" style="display:none; margin-top:8px;"></div>
 
       <div id="txStatus" class="status" style="display:none;" aria-live="polite"></div>
 
@@ -131,13 +134,16 @@
     }
 
     function setSubmitEnabled() {
-      const ok =
-        !!$('pickerName').value.trim() &&
-        !!$('sku').value.trim() &&
-        Number.isFinite(Number($('qty').value)) &&
-        Number($('qty').value) !== 0 &&
-        !!state.product;
-      $('submitBtn').disabled = !ok;
+      const pickerOk = !!$('pickerName').value.trim();
+      const skuOk    = !!$('sku').value.trim();
+      const qtyVal   = Number($('qty').value);
+      const qtyOk    = Number.isFinite(qtyVal) && qtyVal !== 0;
+      const reason   = $('reason').value;
+      const noteTxt  = $('note').value.trim();
+      const noteOk   = (reason === 'adjustUp' || reason === 'adjustDown') ? (noteTxt.length > 0) : true;
+      const prodOk   = !!state.product;
+      $('submitBtn').disabled = !(pickerOk && skuOk && qtyOk && noteOk && prodOk);
+      updatePreview();
     }
 
     function focusSku() {
@@ -260,6 +266,7 @@
           $('prodCard').style.display = 'block';
           setStatus($('fetchStatus'), 'Product loaded.', 'status-ok');
           setSubmitEnabled();
+          updatePreview();
         })
         .catch((err) => {
           setStatus($('fetchStatus'), String(err), 'status-err');
@@ -273,6 +280,28 @@
       setSubmitEnabled();
     }
 
+    function computeDeltaFromReason(qty, reason) {
+      const q = Math.abs(Number(qty) || 0);
+      if (!q) return 0;
+      if (reason === 'pick' || reason === 'pack' || reason === 'adjustDown') return -q;
+      if (reason === 'return' || reason === 'adjustUp') return +q;
+      return 0;
+    }
+
+    function updatePreview() {
+      const sp = $('stockPreview');
+      if (!state.product) { sp.style.display = 'none'; sp.textContent=''; return; }
+      const cur = Number(state.product.current_stock) || 0;
+      const qty = Number($('qty').value) || 0;
+      const reason = $('reason').value;
+      const delta = computeDeltaFromReason(qty, reason);
+      if (!delta) { sp.style.display = 'none'; sp.textContent=''; return; }
+      const after = cur + delta;
+      const dir = delta < 0 ? '↓' : '↑';
+      sp.innerHTML = `Current: <b>${cur}</b> → After: <b>${after}</b> <span style="opacity:.8">(${dir} ${Math.abs(delta)})</span>`;
+      sp.style.display = 'block';
+    }
+
     function submitTx() {
       if (!state.product) return;
 
@@ -283,9 +312,7 @@
       const note     = $('note').value.trim();
       const location = $('location').value.trim() || 'MAIN';
 
-      let qty_change = qty;
-      if (reason === 'pick' || reason === 'pack') qty_change = -Math.abs(qty);
-      if (reason === 'return')                     qty_change =  Math.abs(qty);
+      let qty_change = computeDeltaFromReason(qty, reason);
 
       if (!picker || !sku || !qty_change || qty_change === 0) return;
 
@@ -411,6 +438,8 @@
       $('qty').addEventListener('input', setSubmitEnabled);
       // $('pickerName').addEventListener('input', setSubmitEnabled); // not needed, handled in populateEmployees
       $('sku').addEventListener('input', setSubmitEnabled);
+      $('reason').addEventListener('change', setSubmitEnabled);
+      $('note').addEventListener('input', setSubmitEnabled);
       $('submitBtn').addEventListener('click', submitTx);
 
       $('sku').addEventListener('keydown', (e) => {
