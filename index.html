@@ -87,7 +87,7 @@
       <label for="qty">Quantity change</label>
       <div class="qty-wrap" style="margin:8px 0 14px;">
         <button type="button" class="qty-btn" id="decBtn" aria-label="Decrease quantity">−</button>
-        <input id="qty" class="qty-input" type="number" value="0" step="1" inputmode="numeric" pattern="[0-9]*" min="0" />
+        <input id="qty" class="qty-input" type="number" step="1" inputmode="numeric" pattern="[0-9]*" min="0" placeholder="Qty" />
         <button type="button" class="qty-btn" id="incBtn" aria-label="Increase quantity">+</button>
       </div>
 
@@ -275,8 +275,10 @@
     }
 
     function nudgeQty(delta) {
-      const cur = Number($('qty').value) || 0;
-      $('qty').value = cur + delta;
+      let cur = Number($('qty').value);
+      if (isNaN(cur)) cur = 0;
+      const next = Math.max(0, cur + delta);
+      $('qty').value = next;
       setSubmitEnabled();
     }
 
@@ -435,7 +437,12 @@
 
       $('incBtn').addEventListener('click', () => nudgeQty(+1));
       $('decBtn').addEventListener('click', () => nudgeQty(-1));
-      $('qty').addEventListener('input', setSubmitEnabled);
+      $('qty').addEventListener('input', (e) => {
+        // strip any non-digit characters
+        let val = e.target.value.replace(/[^0-9]/g, '');
+        e.target.value = val;
+        setSubmitEnabled();
+      });
       // $('pickerName').addEventListener('input', setSubmitEnabled); // not needed, handled in populateEmployees
       $('sku').addEventListener('input', (e) => {
         const el = e.target;
