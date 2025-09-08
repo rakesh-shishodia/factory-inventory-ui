@@ -549,17 +549,20 @@ function ecwid_importProductById() {
   const skuCol = idx['sku'];
   if (skuCol < 0) { ui.alert('Products sheet must include a "sku" header'); return; }
 
-  // Map existing rows by SKU
-  const keepBySku = {};
+  // Map existing rows by PK = product_id|combination_id to preserve non-import columns
+  const pidCol = idx['product_id'];
+  const cidCol = idx['combination_id'];
+  const keepByPk = {};
   for (let r = 1; r < existing.length; r++) {
     const row = existing[r];
-    const sku = String(row[skuCol] || '').trim();
-    if (!sku) continue;
+    const pid = String(row[pidCol] || '').trim();
+    const cid = String(row[cidCol] || '').trim();
+    if (!pid) continue;
+    const pk = pid + '|' + cid;
     const obj = {};
     for (let c = 0; c < hdr.length; c++) obj[String(hdr[c]||'').toLowerCase()] = row[c];
-    keepBySku[sku] = obj;
-  }
-
+    keepByPk[pk] = obj;
+ }
   // Fetch product (with variants)
   const prod = ecwid_fetchProductById_(pid);
   if (!prod) { ui.alert('Product not found or API error'); return; }
@@ -576,6 +579,43 @@ function ecwid_importProductById() {
       if (!c || !c.sku || !String(c.sku).trim()) continue;
       const cThumb = c.thumbnailUrl || c.imageUrl || pThumb || '';
       rows.push({ product_id: p.id, combination_id: c.id, sku: c.sku, name: p.name, option_values: ecwid_formatOptionValues_(c.optionValues), enabled: c.enabled, unlimited: c.unlimited, image_url: cThumb });
+    }
+  }
+
+  // ---- Identify and optionally delete orphan rows for this product (variants removed in Ecwid) ----
+  // Build set of fetched PKs for this product
+  const pidStr = String(p.id);
+  const fetchedPk = new Set(rows.map(r => String(r.product_id) + '|' + String(r.combination_id || '')));
+
+  // Collect existing row indexes for same product_id whose PK is not in fetched set
+  const orphanRows = [];
+  const orphanPreview = [];
+  const optCol = idx['option_values']; // may be -1 if header absent
+  for (let r = 1; r < existing.length; r++) {
+    const row = existing[r];
+    const pidExisting = String(row[pidCol] || '').trim();
+    if (pidExisting !== pidStr) continue;
+    const cidExisting = String(row[cidCol] || '').trim();
+    const pk = pidExisting + '|' + cidExisting;
+    if (!fetchedPk.has(pk)) {
+      orphanRows.push(r);
+      const skuTxt = String(row[skuCol] || '').trim();
+      const combTxt = cidExisting || '(none)';
+      const optTxt = optCol >= 0 ? String(row[optCol] || '') : '';
+      orphanPreview.push(` • SKU ${skuTxt} | comb ${combTxt}${optTxt ? ' | ' + optTxt : ''}`);
+    }
+  }
+
+  if (orphanRows.length) {
+    const list = orphanPreview.slice(0, 10).join('\n');
+    const more = orphanRows.length > 10 ? `\n+ ${orphanRows.length - 10} more not shown` : '';
+    const title = `Product ${pidStr} — ${orphanRows.length} stale row(s) found`;
+    const prompt = `${list}${more}\n\nDelete these row(s) now?`;
+    const choice = ui.alert(title, prompt, ui.ButtonSet.YES_NO);
+    if (choice === ui.Button.YES) {
+      // Delete from bottom to top to keep indices valid
+      orphanRows.sort((a,b) => b - a).forEach(ridx => sheet.deleteRow(ridx + 1));
+      // NOTE: We will re-read the sheet later (in Step B) before upserting.
     }
   }
 
@@ -597,31 +637,37 @@ function ecwid_importProductById() {
 
   // Build a helper to render a row array for a given SKU record
   function renderRow(obj, keepMap) {
-    const sku = obj.sku;
-    const keep = keepMap[sku] || {};
-    const arr = new Array(finalHdr.length).fill('');
-    for (let i = 0; i < finalHdr.length; i++) {
-      const col = String(finalHdr[i]||'').toLowerCase();
-      if (importSet.has(col)) arr[i] = obj[col] != null ? obj[col] : '';
-      else arr[i] = keep[col] != null ? keep[col] : '';
-    }
-    return arr;
+  const pk = String(obj.product_id) + '|' + String(obj.combination_id || '');
+  const keep = keepMap[pk] || {};
+  const arr = new Array(finalHdr.length).fill('');
+  for (let i = 0; i < finalHdr.length; i++) {
+    const col = String(finalHdr[i]||'').toLowerCase();
+    if (importSet.has(col)) arr[i] = obj[col] != null ? obj[col] : '';
+    else arr[i] = keep[col] != null ? keep[col] : '';
   }
+  return arr;
+}
 
-  // Update existing
-  const nameToIndex = indexer_(hdr, hdr);
-  const skuToRow = {};
-  for (let r = 1; r < existing.length; r++) {
-    const s = String(existing[r][skuCol]||'').trim();
-    if (s) skuToRow[s] = r;
+  // Update existing using PK = product_id|combination_id (build from a fresh table read to reflect any deletions)
+  const table = sheet.getDataRange().getValues();
+  const thdr  = table[0] || [];
+  const tidx  = indexer_(thdr, thdr);
+  const tPidCol = tidx['product_id'];
+  const tCidCol = tidx['combination_id'];
+  const pkToRow = {};
+  for (let r = 1; r < table.length; r++) {
+    const pidv = String(table[r][tPidCol] || '').trim();
+    const cidv = String(table[r][tCidCol] || '').trim();
+    if (pidv) pkToRow[pidv + '|' + cidv] = r;
   }
   for (const obj of rows) {
-    if (skuToRow[obj.sku] != null) {
-      const rowIdx = skuToRow[obj.sku];
-      const arr = renderRow(obj, keepBySku);
+    const pk = String(obj.product_id) + '|' + String(obj.combination_id || '');
+    if (pkToRow[pk] != null) {
+      const rowIdx = pkToRow[pk];
+      const arr = renderRow(obj, keepByPk);
       sheet.getRange(rowIdx + 1, 1, 1, finalHdr.length).setValues([arr]);
     } else {
-      newRows.push(renderRow(obj, keepBySku));
+      newRows.push(renderRow(obj, keepByPk));
     }
   }
 
