@@ -412,22 +412,10 @@ function ecwid_refreshCatalog() {
   const prodSheet = ss.getSheetByName(SHEET_PRODUCTS);
   if (!prodSheet) { ui.alert('Products sheet not found'); return; }
 
-  // 1) Read existing Products to preserve user columns by SKU
+  // 1) Read existing Products to preserve user columns by PK
   const existing = prodSheet.getDataRange().getValues();
   const existingHdr = existing[0] || [];
   const existingIdx = indexer_(existingHdr, existingHdr); // identity map name->index
-  const skuCol = existingIdx['sku'];
-  if (skuCol < 0) { ui.alert('Products sheet must include a "sku" header'); return; }
-
-  const keepBySku = {}; // sku -> row object of existing values
-  for (let r = 1; r < existing.length; r++) {
-    const row = existing[r];
-    const sku = String(row[skuCol] || '').trim();
-    if (!sku) continue;
-    const obj = {};
-    for (let c = 0; c < existingHdr.length; c++) obj[String(existingHdr[c]||'').toLowerCase()] = row[c];
-    keepBySku[sku] = obj;
-  }
 
   // 2) Fetch full Ecwid catalog (paged)
   const { storeId, token } = ecwid_creds_();
@@ -486,14 +474,33 @@ function ecwid_refreshCatalog() {
     if (finalHdr.map(x=>String(x||'').toLowerCase()).indexOf(h) === -1) finalHdr.push(h);
   }
 
-  // 4) Compose full table in memory, preserving existing per SKU for non-import columns
+  // 4) Compose full table in memory, preserving existing per PK (product_id|combination_id) for non-import columns
   const finalRows = [];
   finalRows.push(finalHdr); // header row
   const importSet = new Set(required);
 
+  // Build keepByPk map to preserve non-import columns by PK
+  const pidCol = existingIdx['product_id'];
+  const cidCol = existingIdx['combination_id'];
+  if (pidCol < 0 || cidCol < 0) {
+    ui.alert('Products sheet must include product_id and combination_id');
+    return;
+  }
+  const keepByPk = {};
+  for (let r = 1; r < existing.length; r++) {
+    const row = existing[r];
+    const pid = String(row[pidCol] || '').trim();
+    const cid = String(row[cidCol] || '').trim();
+    if (!pid) continue;
+    const pk = pid + '|' + cid;
+    const obj = {};
+    for (let c = 0; c < existingHdr.length; c++) obj[String(existingHdr[c]||'').toLowerCase()] = row[c];
+    keepByPk[pk] = obj;
+  }
+
   for (const r of ecwidRows) {
-    const sku = r.sku;
-    const keep = keepBySku[sku] || {};
+    const pk = String(r.product_id) + '|' + String(r.combination_id || '');
+    const keep = keepByPk[pk] || {};
     const rowArr = new Array(finalHdr.length).fill('');
     for (let i = 0; i < finalHdr.length; i++) {
       const colName = String(finalHdr[i]||'').toLowerCase();
