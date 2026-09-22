@@ -2,7 +2,9 @@
 
 ## Current boundary
 
-The app, exact opening-order importer and workbook/app mixed-order handling are implemented locally. This is not a record of a completed production cutover: no real pilot items have been staged or activated, no pilot stock-alignment write has changed Ecwid, and there is no operational mobile URL yet. Production Cloudflare Access is not enabled for the pilot account.
+The app, exact opening-order importer and workbook/app mixed-order handling are implemented. On 2026-09-22, a login-test deployment was published with a separate production database and queue. Cloudflare Access protects its entire hostname with email-code login, the exact approved staff list and the user-approved one-month session. Anonymous requests to the page, static assets and API redirect to Access. A real approved-user login and factory-phone verification remain pending.
+
+This is not a completed production cutover: no real pilot items have been staged or activated, no pilot stock-alignment write has changed Ecwid, and stock operations are not available for factory use. All three enabling flags remain false, no Ecwid credentials have been uploaded, and no cron is configured. Empty counters mean **not imported**, not zero factory stock. The production database contains the seven applied schema migrations and zero items, orders, movements, outbox entries or cutover batches. Resource identifiers, deployment version, URL and verification receipts are retained privately under gitignored `import-data/`.
 
 The one-time alignment workflow is a guarded service (`src/cutover-alignment.ts`), separate from the Worker routes. Its entry points are `beginCutoverAlignment`, `alignCutoverRow` and `finishAndActivateCutover`. There is no public alignment endpoint or operator CLI. A reviewed operator integration and production access/configuration are required before using it with real data. Do not replace that integration with hand-written SQL or ad hoc stock writes.
 
@@ -24,6 +26,22 @@ These are approval boundaries, not permission to reuse old data. Fresh identitie
 4. Prepare the exact approved pilot scope, workbook-managed identity registry and one-to-one unit confirmations. Review mixed orders ahead of time. Resolve unknown or contradictory lines; do not silently omit them.
 5. Prepare a private backup location beneath gitignored `import-data/`, and backups of the authoritative workbook, Ecwid catalogue/open orders and target database. Keep tokens out of command arguments, source files, public assets, chat and Git. Do not disable unrelated workbook processes: identify and stop only integrations that could also write stock for the pilot.
 6. Confirm that the operator integration for the alignment service and the authenticated mobile deployment are ready before requesting a short pause. If infrastructure or operator tooling is still missing, do not ask the factory to remain paused indefinitely.
+
+### Empty-database schema bootstrap
+
+The initial remote `wrangler d1 migrations apply` failed on the first migration with `incomplete input`; inspection confirmed rollback, an empty journal and no business schema. Do not remove or split the stock-safety triggers to work around this error.
+
+For a **new, empty database only**, `scripts/prepare-d1-bootstrap.ts` creates a private local SQL artifact containing the complete original migrations byte-for-byte, in numeric order, with the standard Wrangler journal entries. It makes no database or network calls. Guards reject an existing business schema, nonempty journal or incompatible journal schema before importing business objects. The output directory must already exist with mode `0700`; output creation is exclusive with mode `0600`.
+
+```sh
+node --import tsx scripts/prepare-d1-bootstrap.ts \
+  --migrations ./migrations \
+  --output /absolute/private-directory/bootstrap.sql
+```
+
+Review the artifact hashes and exact target configuration, verify the remote database is empty, and test the complete artifact against an isolated local database. Then import the file through Wrangler's atomic SQL-file import path (`d1 execute DATABASE --remote --config CONFIG --file FILE`). The 2026-09-22 production bootstrap used this path successfully without changing any original migration. Do not rerun it on the initialized database or use it to upgrade an existing database.
+
+After import, verify the migration journal, `migrations list`, schema objects, zero business rows and `PRAGMA foreign_key_check`. For the current seven migrations, the expected business schema has 16 tables, 48 triggers, 2 views and 13 explicit indexes, excluding the platform tables and migration journal. Preserve the artifact hash and import receipt. Future migrations require their own reviewed upgrade workflow; this bootstrap is not a replacement for incremental migrations.
 
 ### Order freshness is a launch requirement
 
