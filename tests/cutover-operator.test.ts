@@ -109,6 +109,15 @@ async function stagedMany() {
   await runOperator('begin', config, credentials, alignment, undefined, deps());
   return alignment;
 }
+async function recoveryReady() {
+  const alignment = await stagedMany();
+  const first = sqlite.prepare('SELECT item_id FROM opening_cutover_rows ORDER BY item_id LIMIT 1').pluck().get() as string;
+  await runOperator('row', config, credentials, alignment, first, deps());
+  vi.setSystemTime('2026-09-22T12:20:00.000Z');
+  return { alignment, request: { operation_id: alignment.operation_id, expected_hash: alignment.expected_hash,
+    recovery_id: '50000000-0000-4000-8000-000000000005',
+    recovery_freeze: { confirmed: true, started_at: '2026-09-22T12:20:00.000Z' } } };
+}
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(at);
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('Real network forbidden'); }));
@@ -125,6 +134,7 @@ afterEach(() => { sqlite.close(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe('private command and target inputs', () => {
   it('accepts only explicit commands and known flags', () => {
     expect(parseOperatorArgs(['begin', '--config', 'c.json', '--request', 'r.json']).command).toBe('begin');
+    expect(parseOperatorArgs(['recover', '--config', 'c.json', '--request', 'recovery.json']).command).toBe('recover');
     expect(parseOperatorConfig(config)).toEqual(config); expect(() => verifyProxyConfig(proxyConfig(), config)).not.toThrow();
   });
   it.each([
@@ -304,6 +314,71 @@ describe('operator lifecycle uses existing services without retries', () => {
     expect(retry).toMatchObject({ verified_count: 3 });
     expect((retry.rows as { skipped?: boolean }[]).every(row => row.skipped)).toBe(true);
     expect(ecwidFetch).not.toHaveBeenCalled(); expect(cloudflareFetch).toHaveBeenCalledTimes(4);
+  });
+  it('recovers one partially verified batch in one fresh session without replaying the verified row', async () => {
+    const { request: recovery } = await recoveryReady();
+    expect(sqlite.prepare("SELECT COUNT(*) FROM opening_cutover_rows WHERE alignment_status='VERIFIED'").pluck().get()).toBe(1);
+    const preflight = vi.fn(); const progress = vi.fn(); ecwidFetch.mockClear(); cloudflareFetch.mockClear();
+    const result = await runOperator('recover', config, credentials, recovery, undefined,
+      { ...deps(), onRecoveryPreflight: preflight, onRow: progress });
+    expect(result).toMatchObject({ state: 'ACTIVE', activated: true, recovery_id: recovery.recovery_id,
+      recovery_initial_verified_count: 1, recovery_resumed_count: 2 });
+    expect(preflight).toHaveBeenCalledOnce(); expect(preflight.mock.calls[0][0]).toMatchObject({
+      event: 'recovery_preflight_verified', initial_verified_count: 1, pending_count: 2, row_count: 3 });
+    expect(progress).toHaveBeenCalledTimes(2);
+    expect(ecwidFetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(2);
+    expect(sqlite.prepare("SELECT COUNT(*) FROM opening_cutover_rows WHERE alignment_status='VERIFIED'").pluck().get()).toBe(3);
+    expect(sqlite.prepare("SELECT value FROM sync_state WHERE key='orders_tracking_started'").pluck().get()).toBe(frozen);
+    // Full authority at start, one active-version check per changed row, and one before activation.
+    expect(cloudflareFetch).toHaveBeenCalledTimes(7);
+  });
+  it('stops before all writes when a PENDING target no longer has its original expected quantity', async () => {
+    const { request: recovery } = await recoveryReady();
+    const pendingProduct = sqlite.prepare("SELECT ecwid_product_id FROM opening_cutover_rows WHERE alignment_status='PENDING' LIMIT 1").pluck().get() as string;
+    const previous = ecwidFetch.getMockImplementation()!; ecwidFetch.mockClear();
+    ecwidFetch.mockImplementation(async (input, init) => {
+      const response = await previous(input, init);
+      if (init?.method === 'GET' && new URL(String(input)).pathname.endsWith(`/products/${pendingProduct}`)) {
+        const body = await response.json<Record<string, unknown>>(); return Response.json({ ...body, quantity: 11 });
+      }
+      return response;
+    });
+    await expect(runOperator('recover', config, credentials, recovery, undefined, deps())).rejects.toThrow();
+    expect(ecwidFetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+    expect(sqlite.prepare('SELECT state FROM opening_cutover_batches').pluck().get()).toBe('ALIGNING');
+    expect(sqlite.prepare("SELECT COUNT(*) FROM opening_cutover_rows WHERE alignment_status='PENDING'").pluck().get()).toBe(2);
+  });
+  it('holds an uncertain recovery PUT once and never dispatches a later PENDING row', async () => {
+    const { request: recovery } = await recoveryReady(); const previous = ecwidFetch.getMockImplementation()!; ecwidFetch.mockClear();
+    ecwidFetch.mockImplementation(async (input, init) => {
+      if (init?.method === 'PUT') throw new Error('lost response'); return previous(input, init);
+    });
+    await expect(runOperator('recover', config, credentials, recovery, undefined, deps())).rejects.toThrow();
+    expect(ecwidFetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    expect(sqlite.prepare("SELECT COUNT(*) FROM opening_cutover_rows WHERE alignment_status='UNKNOWN'").pluck().get()).toBe(1);
+    expect(sqlite.prepare("SELECT COUNT(*) FROM opening_cutover_rows WHERE alignment_status='PENDING'").pluck().get()).toBe(1);
+    expect(sqlite.prepare('SELECT state FROM opening_cutover_batches').pluck().get()).toBe('REVIEW');
+  });
+  it('leaves the next row PENDING when deployment drift is detected before its PUT', async () => {
+    const { request: recovery } = await recoveryReady(); cloudflareFetch.mockClear(); ecwidFetch.mockClear();
+    cloudflareFetch.mockImplementation(async (input, init) => cloudflareFetch.mock.calls.length === 5
+      ? envelope(deployments('40000000-0000-4000-8000-000000000004')) : cfTransport(input, init));
+    await expect(runOperator('recover', config, credentials, recovery, undefined, deps())).rejects.toThrow('OPERATOR_DEPLOYMENT_CHANGED');
+    expect(ecwidFetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+    expect(sqlite.prepare("SELECT COUNT(*) FROM opening_cutover_rows WHERE alignment_status='PENDING'").pluck().get()).toBe(2);
+    expect(sqlite.prepare('SELECT state FROM opening_cutover_batches').pluck().get()).toBe('ALIGNING');
+  });
+  it('keeps fully verified rows inactive and ALIGNING when the lease expires during the final deployment check', async () => {
+    const { request: recovery } = await recoveryReady(); cloudflareFetch.mockClear(); ecwidFetch.mockClear();
+    cloudflareFetch.mockImplementation(async (input, init) => {
+      const response = await cfTransport(input, init);
+      if (cloudflareFetch.mock.calls.length === 7) vi.setSystemTime('2026-09-22T12:50:00.000Z');
+      return response;
+    });
+    await expect(runOperator('recover', config, credentials, recovery, undefined, deps())).rejects.toThrow('CUTOVER_FREEZE_EXPIRED');
+    expect(sqlite.prepare("SELECT COUNT(*) FROM opening_cutover_rows WHERE alignment_status='VERIFIED'").pluck().get()).toBe(3);
+    expect(sqlite.prepare('SELECT state FROM opening_cutover_batches').pluck().get()).toBe('ALIGNING');
+    expect(sqlite.prepare('SELECT COUNT(*) FROM items WHERE active<>0').pluck().get()).toBe(0);
   });
   it('stops the session at the first uncertain write and never dispatches later rows or resends it', async () => {
     const alignment = await stagedMany(); const previous = ecwidFetch.getMockImplementation()!; ecwidFetch.mockClear();

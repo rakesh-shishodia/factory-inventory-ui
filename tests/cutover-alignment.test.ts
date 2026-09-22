@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { alignCutoverRow, beginCutoverAlignment, finishAndActivateCutover,
+import { alignCutoverRow, beginCutoverAlignment, finishAndActivateCutover, recoverAndActivateCutover,
   type CutoverAlignmentPolicy, type CutoverAlignmentRequest } from '../src/cutover-alignment';
 import { previewOpeningCutover, stageOpeningCutover, type OpeningCutoverRequest } from '../src/opening-cutover';
 import type { EcwidFetch, EcwidOrder } from '../src/ecwid';
@@ -406,5 +406,40 @@ describe('activation verification and rollback', () => {
     await expect(finish()).rejects.toMatchObject({ code: 'CUTOVER_REVIEW_REQUIRED' });
     expect(state()).toBe('REVIEW'); expect(sqlite.prepare('SELECT active,last_ecwid_quantity FROM items').get()).toEqual({ active: 0, last_ecwid_quantity: 12 });
     expect(sqlite.prepare('SELECT status FROM sync_issues').pluck().get()).toBe('OPEN');
+  });
+});
+
+describe('single-session partial alignment recovery', () => {
+  const recovery = () => ({ operation_id: request.operation_id, expected_hash: request.expected_hash,
+    recovery_id: '50000000-0000-4000-8000-000000000005',
+    recovery_freeze: { confirmed: true as const, started_at: '2026-09-22T12:20:00.000Z' } });
+
+  it('validates preserved VERIFIED stock before any recovery write and leaves the batch ALIGNING on mismatch', async () => {
+    await stage(); await begin(); await align(); quantity = 6; fetcher.mockClear();
+    await expect(recoverAndActivateCutover(db, recovery(), { ...policy, now: '2026-09-22T12:20:30.000Z' }, { fetcher }))
+      .rejects.toMatchObject({ code: 'CUTOVER_TARGET_CHANGED' });
+    expect(writes()).toHaveLength(0); expect(state()).toBe('ALIGNING');
+    expect(row()).toMatchObject({ alignment_status: 'VERIFIED', after_quantity: 7 });
+  });
+
+  it('requires a new explicit recovery freeze and keeps every live flag disabled', async () => {
+    await stage(); await begin(); await align(); fetcher.mockClear();
+    const now = { ...policy, now: '2026-09-22T12:20:30.000Z' };
+    await expect(recoverAndActivateCutover(db, { operation_id: request.operation_id, expected_hash: request.expected_hash,
+      recovery_id: recovery().recovery_id, freeze: { confirmed: true, started_at: frozen } }, now, { fetcher }))
+      .rejects.toMatchObject({ code: 'CUTOVER_RECOVERY_REQUEST_INVALID' });
+    for (const key of ['inventoryEnabled', 'liveSyncEnabled', 'orderSyncEnabled'] as const) {
+      await expect(recoverAndActivateCutover(db, recovery(), { ...now, [key]: 'true' }, { fetcher }))
+        .rejects.toMatchObject({ code: 'CUTOVER_FLAGS_UNSAFE' });
+    }
+    expect(fetcher).not.toHaveBeenCalled(); expect(state()).toBe('ALIGNING');
+  });
+
+  it('does not turn a pure recovery lease expiry into REVIEW', async () => {
+    await stage(); await begin(); await align(); fetcher.mockClear();
+    await expect(recoverAndActivateCutover(db, recovery(), { ...policy, now: '2026-09-22T12:50:00.000Z' }, { fetcher }))
+      .rejects.toMatchObject({ code: 'CUTOVER_FREEZE_EXPIRED' });
+    expect(fetcher).not.toHaveBeenCalled(); expect(state()).toBe('ALIGNING');
+    expect(row()).toMatchObject({ alignment_status: 'VERIFIED' });
   });
 });

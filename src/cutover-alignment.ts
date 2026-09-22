@@ -10,6 +10,12 @@ export interface CutoverAlignmentRequest {
   expected_hash: string;
   freeze: { confirmed: true; started_at: string };
 }
+export interface CutoverRecoveryRequest {
+  operation_id: string;
+  expected_hash: string;
+  recovery_id: string;
+  recovery_freeze: { confirmed: true; started_at: string };
+}
 export interface CutoverAlignmentPolicy {
   storeId: string; actor: string; token: string; mode: string;
   inventoryEnabled: string; liveSyncEnabled: string; orderSyncEnabled: string;
@@ -17,6 +23,13 @@ export interface CutoverAlignmentPolicy {
   now?: string;
 }
 export interface CutoverAlignmentOptions { fetcher?: EcwidFetch; clock?: () => string }
+export interface CutoverRecoveryOptions extends CutoverAlignmentOptions {
+  /** Trusted operator reporters; never populated from a request body. */
+  onPreflight?: (receipt: Record<string, unknown>) => void;
+  onRow?: (receipt: Record<string, unknown>) => void;
+  beforeStockWrite?: () => Promise<void>;
+  beforeActivation?: () => Promise<void>;
+}
 type BatchState = 'STAGED' | 'ALIGNING' | 'ALIGNED' | 'ACTIVE' | 'REVIEW';
 type AlignmentStatus = 'PENDING' | 'PROCESSING' | 'VERIFIED' | 'UNKNOWN' | 'BLOCKED';
 interface Batch {
@@ -40,10 +53,14 @@ interface Context {
   orders: OrderIdentity[]; lines: LineIdentity[]; now: () => string;
   policy: CutoverAlignmentPolicy; fetcher?: EcwidFetch;
   workbook: WorkbookTarget[];
+  leaseStartedAt: string; leaseMs: number;
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[a-f0-9]{64}$/;
 const FREEZE_MS = 15 * 60 * 1000;
+const RECOVERY_FREEZE_MS = 30 * 60 * 1000;
+const RECOVERY_WRITE_BUFFER_MS = 60 * 1000;
+const RECOVERY_FINALIZATION_BUFFER_MS = 5 * 60 * 1000;
 const MAX_ORDERS = 50_000;
 function fail(code: string, message: string, status = 409): never { throw new DomainError(status, code, message); }
 function utc(value: unknown): number {
@@ -56,9 +73,9 @@ async function sha(value: unknown): Promise<string> {
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 function remainingLease(context: Context): number {
-  const elapsed = utc(context.now()) - utc(context.batch.frozen_at);
-  if (elapsed < 0 || elapsed >= FREEZE_MS) fail('CUTOVER_FREEZE_EXPIRED', 'The confirmed stock freeze expired. Stop and reconcile before any further alignment.');
-  return FREEZE_MS - elapsed;
+  const elapsed = utc(context.now()) - utc(context.leaseStartedAt);
+  if (elapsed < 0 || elapsed >= context.leaseMs) fail('CUTOVER_FREEZE_EXPIRED', 'The confirmed stock freeze expired. Stop and reconcile before any further alignment.');
+  return context.leaseMs - elapsed;
 }
 function client(context: Context): EcwidClient {
   return new EcwidClient({ storeId: context.policy.storeId, token: context.policy.token }, context.fetcher,
@@ -120,7 +137,37 @@ async function loadContext(db: D1Database, value: unknown, policy: CutoverAlignm
       item_id: item?.item_id ?? null, mode: item ? 'APP' : 'WORKBOOK', workbook_target_id: outside ? workbookTargetId(outside) : null };
   }));
   if (lines.length !== batch.line_count) fail('CUTOVER_AUDIT_INVALID', 'The staged order-line count does not match.');
-  return { batch, rows, snapshot, orders, lines, now, policy, fetcher: options.fetcher,workbook };
+  return { batch, rows, snapshot, orders, lines, now, policy, fetcher: options.fetcher,workbook,
+    leaseStartedAt: batch.frozen_at, leaseMs: FREEZE_MS };
+}
+
+async function loadRecoveryContext(db: D1Database, value: unknown, policy: CutoverAlignmentPolicy,
+  options: CutoverAlignmentOptions): Promise<{ context: Context; request: CutoverRecoveryRequest }> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('CUTOVER_RECOVERY_REQUEST_INVALID', 'A reviewed recovery request is required.', 400);
+  const raw = value as Record<string, unknown>;
+  const allowed = ['operation_id', 'expected_hash', 'recovery_id', 'recovery_freeze'];
+  if (Object.keys(raw).some(key => !allowed.includes(key)) || typeof raw.operation_id !== 'string' || !UUID.test(raw.operation_id)
+    || typeof raw.expected_hash !== 'string' || !SHA.test(raw.expected_hash)
+    || typeof raw.recovery_id !== 'string' || !UUID.test(raw.recovery_id)
+    || !raw.recovery_freeze || typeof raw.recovery_freeze !== 'object' || Array.isArray(raw.recovery_freeze)) {
+    fail('CUTOVER_RECOVERY_REQUEST_INVALID', 'Provide the exact operation, recovery ID, approved hash and new freeze confirmation.', 400);
+  }
+  const recoveryFreeze = raw.recovery_freeze as Record<string, unknown>;
+  if (Object.keys(recoveryFreeze).sort().join(',') !== 'confirmed,started_at' || recoveryFreeze.confirmed !== true) {
+    fail('CUTOVER_RECOVERY_FREEZE_REQUIRED', 'Explicitly confirm that store-wide Ecwid ordering and all pilot physical movements are paused.', 400);
+  }
+  const recoveryStarted = utc(recoveryFreeze.started_at);
+  const stored = await db.prepare('SELECT frozen_at FROM opening_cutover_batches WHERE operation_id=?')
+    .bind(raw.operation_id.toLowerCase()).first<{ frozen_at: string }>();
+  if (!stored) fail('CUTOVER_NOT_FOUND', 'The reviewed staged cutover does not exist.', 404);
+  if (recoveryStarted <= utc(stored.frozen_at)) fail('CUTOVER_RECOVERY_FREEZE_INVALID', 'The recovery freeze must be newer than the original cutover freeze.', 400);
+  const context = await loadContext(db, { operation_id: raw.operation_id, expected_hash: raw.expected_hash,
+    freeze: { confirmed: true, started_at: stored.frozen_at } }, policy, options);
+  context.leaseStartedAt = String(recoveryFreeze.started_at);
+  context.leaseMs = RECOVERY_FREEZE_MS;
+  const request: CutoverRecoveryRequest = { operation_id: context.batch.operation_id, expected_hash: raw.expected_hash,
+    recovery_id: raw.recovery_id.toLowerCase(), recovery_freeze: { confirmed: true, started_at: String(recoveryFreeze.started_at) } };
+  return { context, request };
 }
 
 // Used in both read checks and the final write transaction. A conditional state
@@ -226,6 +273,26 @@ function assertTarget(row: StockRow, target: EcwidProduct, expectedQuantity: num
     fail('CUTOVER_TARGET_CHANGED', 'An exact stock target, eligibility setting or reviewed quantity changed. No policy changes are permitted.');
   }
 }
+function rowStatusEvidence(rows: StockRow[]) {
+  return rows.map(row => ({ item_id: row.item_id, alignment_status: row.alignment_status,
+    before_quantity: row.before_quantity, after_quantity: row.after_quantity }));
+}
+async function assertRecoveryTargets(context: Context): Promise<string> {
+  const evidence: Array<Record<string, unknown>> = [];
+  for (const row of context.rows) {
+    if (!['PENDING', 'VERIFIED'].includes(row.alignment_status)) {
+      fail('CUTOVER_ROW_HELD', 'Recovery cannot reset or retry a previously attempted unresolved row.');
+    }
+    const expected = row.alignment_status === 'VERIFIED' ? row.target_quantity : row.expected_ecwid_quantity;
+    const target = await client(context).getProductStock(row.ecwid_product_id, row.ecwid_combination_id);
+    remainingLease(context);
+    assertTarget(row, target, expected);
+    evidence.push({ item_id: row.item_id, sku: row.sku, ecwid_product_id: row.ecwid_product_id,
+      ecwid_combination_id: row.ecwid_combination_id, ecwid_option_signature: row.ecwid_option_signature,
+      alignment_status: row.alignment_status, required_quantity: expected, live_quantity: target.quantity });
+  }
+  return sha(evidence);
+}
 async function receipt(db: D1Database, context: Context, duplicate = false) {
   const status = await db.prepare('SELECT state FROM opening_cutover_batches WHERE operation_id=?')
     .bind(context.batch.operation_id).first<BatchState>('state');
@@ -271,12 +338,19 @@ export async function beginCutoverAlignment(db: D1Database, value: unknown, poli
 export async function alignCutoverRow(db: D1Database, value: unknown, policy: CutoverAlignmentPolicy,
   options: CutoverAlignmentOptions = {}) {
   const context = await loadContext(db, value, policy, options, true);
+  return alignLoadedCutoverRow(db, context, value);
+}
+
+async function alignLoadedCutoverRow(db: D1Database, context: Context, value: unknown, compact = false,
+  beforeStockWrite?: () => Promise<void>) {
   const itemId = (value as Record<string, unknown>).item_id;
   if (typeof itemId !== 'string' || !UUID.test(itemId)) fail('CUTOVER_ITEM_INVALID', 'Use the exact staged item ID.', 400);
   const row = context.rows.find(row => row.item_id === itemId);
   if (!row) fail('CUTOVER_ITEM_INVALID', 'This item does not belong to the reviewed cutover.', 404);
   if (context.batch.state !== 'ALIGNING') fail('CUTOVER_STATE_INVALID', 'Alignment is not active or requires manual review.');
-  if (row.alignment_status === 'VERIFIED') return { ...await receipt(db, context, true), item_id: itemId, alignment_status: 'VERIFIED' as const };
+  if (row.alignment_status === 'VERIFIED') return compact
+    ? { item_id: itemId, alignment_status: 'VERIFIED' as const, skipped: true }
+    : { ...await receipt(db, context, true), item_id: itemId, alignment_status: 'VERIFIED' as const };
   if (row.alignment_status !== 'PENDING') fail('CUTOVER_ROW_HELD', 'This stock target was already attempted. Reconcile its journal before any further write.');
   if (context.rows.some(row => row.alignment_status === 'PROCESSING')) fail('CUTOVER_ROW_BUSY', 'Another stock target has an unresolved in-flight operation.');
   remainingLease(context);
@@ -287,6 +361,10 @@ export async function alignCutoverRow(db: D1Database, value: unknown, policy: Cu
     remainingLease(context);
     assertTarget(row, target, row.expected_ecwid_quantity);
     const noOp = row.expected_ecwid_quantity === row.target_quantity;
+    if (!noOp) await beforeStockWrite?.();
+    if (compact && remainingLease(context) <= RECOVERY_WRITE_BUFFER_MS) {
+      fail('CUTOVER_RECOVERY_FREEZE_EXPIRING', 'Recovery stopped before claiming another row. No stock write was attempted.');
+    }
     const timestamp = context.now();
     const claim = await db.prepare(`${CONTEXT_SQL} UPDATE opening_cutover_rows SET alignment_status=?,before_quantity=?,
       attempted_at=?,after_quantity=?,verified_at=? WHERE operation_id=? AND item_id=? AND alignment_status='PENDING'
@@ -312,8 +390,9 @@ export async function alignCutoverRow(db: D1Database, value: unknown, policy: Cu
         .bind(after.quantity, context.now(), context.batch.operation_id, itemId, context.batch.operation_id).first();
       if (!verified) fail('CUTOVER_REVIEW_REQUIRED', 'The write was confirmed remotely but could not be verified in its journal.');
     }
-    return { ...await receipt(db, context), item_id: itemId, alignment_status: 'VERIFIED' as const, no_op: noOp };
+    return { ...(compact ? {} : await receipt(db, context)), item_id: itemId, alignment_status: 'VERIFIED' as const, no_op: noOp };
   } catch (error) {
+    if (compact && !claimed) throw error;
     if (error instanceof DomainError && error.code === 'CUTOVER_ROW_BUSY' && !claimed) throw error;
     const uncertain = writeAttempted && (writeConfirmed || !(error instanceof EcwidError && error.outcome !== 'UNKNOWN'));
     const status = uncertain ? 'UNKNOWN' : 'BLOCKED';
@@ -337,10 +416,16 @@ export async function alignCutoverRow(db: D1Database, value: unknown, policy: Cu
 export async function finishAndActivateCutover(db: D1Database, value: unknown, policy: CutoverAlignmentPolicy,
   options: CutoverAlignmentOptions = {}) {
   const context = await loadContext(db, value, policy, options);
+  return finishLoadedCutover(db, context);
+}
+
+async function finishLoadedCutover(db: D1Database, context: Context, beforeActivation?: () => Promise<void>,
+  preserveOnLeaseExpiry = false) {
   if (context.batch.state === 'ACTIVE') return receipt(db, context, true);
   if (context.batch.state !== 'ALIGNING') fail('CUTOVER_STATE_INVALID', 'Only a fully aligned in-progress cutover may be activated.');
   if (context.rows.some(row => row.alignment_status !== 'VERIFIED')) fail('CUTOVER_NOT_VERIFIED', 'Every stock target must be verified before activation.');
   remainingLease(context);
+  let activationAttempted = false;
   try {
     await assertDatabase(db, context);
     // Check each exact target, then perform the complete order scan last so any
@@ -352,7 +437,10 @@ export async function finishAndActivateCutover(db: D1Database, value: unknown, p
     await assertLiveOrders(context);
     await assertNoNewOrders(context);
     remainingLease(context);
+    await beforeActivation?.();
+    remainingLease(context);
     const timestamp = context.now();
+    activationAttempted = true;
     await db.batch([
       db.prepare(`${CONTEXT_SQL} UPDATE opening_cutover_batches AS b SET
         state=CASE WHEN b.state='ALIGNING' AND (${DB_GUARD}) THEN 'ALIGNED' ELSE 'INVALID' END,updated_at=?
@@ -368,8 +456,66 @@ export async function finishAndActivateCutover(db: D1Database, value: unknown, p
     ]);
     return receipt(db, context);
   } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    if (preserveOnLeaseExpiry && !activationAttempted
+      && ['CUTOVER_FREEZE_EXPIRED', 'CUTOVER_RECOVERY_FREEZE_EXPIRING'].includes(code)) throw error;
     await review(db, context);
     if (error instanceof DomainError) throw error;
     fail('CUTOVER_REVIEW_REQUIRED', 'Final stock, order or atomic database verification failed. Inventory remains disabled.');
   }
+}
+
+/** One trusted recovery session: fresh full preflight, untouched PENDING rows only,
+ * then the ordinary full read-back and atomic activation. The request and evidence
+ * hash form the recovery receipt; existing per-row transitions remain the durable
+ * no-retry journal. A stopped process requires a new explicit recovery freeze.
+ */
+export async function recoverAndActivateCutover(db: D1Database, value: unknown, policy: CutoverAlignmentPolicy,
+  options: CutoverRecoveryOptions = {}) {
+  const loaded = await loadRecoveryContext(db, value, policy, options);
+  const { context, request } = loaded;
+  if (context.batch.state !== 'ALIGNING') fail('CUTOVER_STATE_INVALID', 'Only the existing partially aligned batch may enter recovery.');
+  const verified = context.rows.filter(row => row.alignment_status === 'VERIFIED').length;
+  const pendingRows = context.rows.filter(row => row.alignment_status === 'PENDING');
+  if (!verified || verified + pendingRows.length !== context.rows.length) {
+    fail('CUTOVER_RECOVERY_ROWS_INVALID', 'Recovery requires preserved VERIFIED rows and only untouched PENDING rows.');
+  }
+  remainingLease(context);
+  let liveTargetsHash: string; let cutoff: number;
+  try {
+    await assertDatabase(db, context);
+    liveTargetsHash = await assertRecoveryTargets(context);
+    cutoff = await assertLiveOrders(context);
+    await assertNoNewOrders(context);
+  } catch (error) {
+    if (error instanceof DomainError) throw error;
+    fail('CUTOVER_RECOVERY_PREFLIGHT_FAILED', 'Fresh target or order validation failed. No recovery stock write was attempted.');
+  }
+  if (remainingLease(context) <= RECOVERY_WRITE_BUFFER_MS) {
+    fail('CUTOVER_RECOVERY_FREEZE_EXPIRING', 'Less than one minute remains in the recovery freeze. No recovery stock write was attempted.');
+  }
+  const evidence = { schema_version: 1, recovery_id: request.recovery_id, operation_id: context.batch.operation_id,
+    review_hash: context.batch.review_hash, original_frozen_at: context.batch.frozen_at,
+    recovery_frozen_at: request.recovery_freeze.started_at, row_count: context.rows.length,
+    initial_verified_count: verified, pending_count: pendingRows.length,
+    row_status_hash: await sha(rowStatusEvidence(context.rows)), live_targets_hash: liveTargetsHash,
+    orders_hash: context.batch.orders_hash, orders_checked: context.snapshot.orders_checked, orders_cutoff: cutoff };
+  const evidenceHash = await sha(evidence);
+  options.onPreflight?.({ event: 'recovery_preflight_verified', ...evidence, evidence_hash: evidenceHash });
+  let resumed = 0;
+  for (const row of pendingRows) {
+    if (remainingLease(context) <= RECOVERY_FINALIZATION_BUFFER_MS) {
+      fail('CUTOVER_RECOVERY_FREEZE_EXPIRING', 'Recovery stopped with five minutes reserved for a fresh final verification. No uncertain write was retried.');
+    }
+    const result = await alignLoadedCutoverRow(db, context, { item_id: row.item_id }, true, options.beforeStockWrite);
+    resumed += 1;
+    options.onRow?.({ event: 'row_verified', recovery_id: request.recovery_id, evidence_hash: evidenceHash, ...result });
+  }
+  const refreshed = (await loadRecoveryContext(db, value, policy, options)).context;
+  if (remainingLease(refreshed) <= RECOVERY_FINALIZATION_BUFFER_MS) {
+    fail('CUTOVER_RECOVERY_FREEZE_EXPIRING', 'Recovery stopped before final verification. Start a new explicitly confirmed pause; verified rows will not be replayed.');
+  }
+  const activated = await finishLoadedCutover(db, refreshed, options.beforeActivation, true);
+  return { ...activated, recovery_id: request.recovery_id, recovery_frozen_at: request.recovery_freeze.started_at,
+    recovery_evidence_hash: evidenceHash, recovery_initial_verified_count: verified, recovery_resumed_count: resumed };
 }

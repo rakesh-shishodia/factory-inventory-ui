@@ -8,10 +8,10 @@ import { parseEnv, promisify } from 'node:util';
 import { DomainError } from '../src/domain';
 import { readBoundedJson, type EcwidFetch } from '../src/ecwid';
 import { previewOpeningCutover, stageOpeningCutover } from '../src/opening-cutover';
-import { beginCutoverAlignment, alignCutoverRow, finishAndActivateCutover } from '../src/cutover-alignment';
+import { beginCutoverAlignment, alignCutoverRow, finishAndActivateCutover, recoverAndActivateCutover } from '../src/cutover-alignment';
 
 type ObjectValue = Record<string, unknown>;
-type Command = 'status' | 'preview' | 'stage' | 'begin' | 'row' | 'rows' | 'finish';
+type Command = 'status' | 'preview' | 'stage' | 'begin' | 'row' | 'rows' | 'finish' | 'recover';
 export interface OperatorConfig {
   schema_version: 1; account_id: string; worker_name: string; database_id: string; database_name: string;
   store_id: string; actor: string; expected_version_id: string; credentials_file: string; wrangler_config: string;
@@ -23,13 +23,14 @@ export interface OperatorDependencies {
   connect?: (config: OperatorConfig, credentials: OperatorCredentials) => Promise<OperatorDatabase>;
   /** Trusted terminal reporter only; never receives request input or credentials. */
   onRow?: (receipt: ObjectValue) => void;
+  onRecoveryPreflight?: (receipt: ObjectValue) => void;
 }
 export class OperatorError extends Error {
   constructor(readonly code: string) { super(code); this.name = 'OperatorError'; }
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[a-f0-9]{64}$/;
-const COMMANDS: Command[] = ['status', 'preview', 'stage', 'begin', 'row', 'rows', 'finish'];
+const COMMANDS: Command[] = ['status', 'preview', 'stage', 'begin', 'row', 'rows', 'finish', 'recover'];
 function stop(code: string): never { throw new OperatorError(code); }
 function object(value: unknown): ObjectValue {
   if (!value || typeof value !== 'object' || Array.isArray(value)) stop('OPERATOR_INVALID_INPUT');
@@ -269,6 +270,15 @@ function alignmentRequest(value: unknown, command: Command, itemId?: string): Ob
     return request;
   }
   if (command === 'preview' || command === 'stage') return request;
+  if (command === 'recover') {
+    exactKeys(request, ['operation_id', 'expected_hash', 'recovery_id', 'recovery_freeze']);
+    if (typeof request.operation_id !== 'string' || !UUID.test(request.operation_id)
+      || typeof request.expected_hash !== 'string' || !SHA.test(request.expected_hash)
+      || typeof request.recovery_id !== 'string' || !UUID.test(request.recovery_id)) stop('OPERATOR_INVALID_REQUEST');
+    const recoveryFreeze = object(request.recovery_freeze); exactKeys(recoveryFreeze, ['confirmed', 'started_at']);
+    if (recoveryFreeze.confirmed !== true || typeof recoveryFreeze.started_at !== 'string') stop('OPERATOR_INVALID_REQUEST');
+    return request;
+  }
   exactKeys(request, ['operation_id', 'expected_hash', 'freeze']);
   if (typeof request.operation_id !== 'string' || !UUID.test(request.operation_id)
     || typeof request.expected_hash !== 'string' || !SHA.test(request.expected_hash)) stop('OPERATOR_INVALID_REQUEST');
@@ -281,7 +291,8 @@ function sanitizedReceipt(value: unknown): ObjectValue {
   const receipt = object(value); const safe: ObjectValue = {};
   for (const key of ['status', 'state', 'duplicate', 'operation_id', 'store_id', 'review_hash', 'preview_hash', 'row_count',
     'order_count', 'line_count', 'workbook_line_count', 'created_at', 'verified_count', 'activated', 'reservations_loaded',
-    'ecwid_changed', 'dry_run', 'item_id', 'alignment_status', 'no_op']) {
+    'ecwid_changed', 'dry_run', 'item_id', 'alignment_status', 'no_op', 'recovery_id', 'recovery_frozen_at',
+    'recovery_evidence_hash', 'recovery_initial_verified_count', 'recovery_resumed_count']) {
     if (receipt[key] === null || ['string', 'number', 'boolean'].includes(typeof receipt[key])) safe[key] = receipt[key];
   }
   return safe;
@@ -326,20 +337,30 @@ export async function runOperator(command: Command, rawConfig: unknown, credenti
       await check();
       // Cloudflare verification itself can take time. Never let its latency
       // extend the existing services' freeze lease immediately before a write.
-      const freeze = object(request.freeze);
+      const freeze = object(command === 'recover' ? request.recovery_freeze : request.freeze);
       const started = typeof freeze.started_at === 'string' ? Date.parse(freeze.started_at) : NaN;
       const elapsed = Date.now() - started;
-      if (freeze.confirmed !== true || !Number.isFinite(elapsed) || elapsed < 0 || elapsed >= 15 * 60 * 1000) stop('CUTOVER_FREEZE_EXPIRED');
+      const deadline = command === 'recover' ? 29 * 60 * 1000 : 15 * 60 * 1000;
+      if (freeze.confirmed !== true || !Number.isFinite(elapsed) || elapsed < 0 || elapsed >= deadline) stop('CUTOVER_FREEZE_EXPIRED');
     };
-    const db = guardDatabase(connection.db, checkWrite);
-    const ecwidFetch: EcwidFetch = async (input, init) => {
+    const restrictedEcwidFetch = (guardPut: boolean): EcwidFetch => async (input, init) => {
       const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
       if (url.origin !== 'https://app.ecwid.com' || !url.pathname.startsWith(`/api/v3/${config.store_id}/`)
         || !['GET', 'PUT'].includes(init?.method ?? '')) stop('OPERATOR_ECWID_REQUEST_FORBIDDEN');
-      if (init?.method === 'PUT') await checkWrite();
+      if (guardPut && init?.method === 'PUT') await checkWrite();
       if (init?.signal?.aborted) stop('OPERATOR_REQUEST_EXPIRED');
       return (dependencies.ecwidFetch ?? fetch)(input, init);
     };
+    if (command === 'recover') {
+      const result = await recoverAndActivateCutover(connection.db, request, policy, {
+        fetcher: restrictedEcwidFetch(false), beforeStockWrite: checkWrite, beforeActivation: checkWrite,
+        onPreflight: receipt => dependencies.onRecoveryPreflight?.(receipt),
+        onRow: receipt => dependencies.onRow?.(receipt),
+      });
+      return { ...deployed, command, ...sanitizedReceipt(result) };
+    }
+    const db = guardDatabase(connection.db, checkWrite);
+    const ecwidFetch = restrictedEcwidFetch(true);
     if (command === 'rows') {
       const freeze = object(request.freeze);
       const batch = await db.prepare(`SELECT state,row_count FROM opening_cutover_batches
@@ -399,12 +420,13 @@ export async function operatorMain(args: string[]): Promise<ObjectValue> {
   alignmentRequest(request, parsed.command, parsed.itemId);
   const cloudflareToken = await loadWranglerBearer(config.wrangler_config);
   return runOperator(parsed.command, config, { ecwidToken, cloudflareToken }, request, parsed.itemId,
-    { onRow: receipt => console.log(JSON.stringify({ event: 'row_verified', ...receipt })) });
+    { onRecoveryPreflight: receipt => console.log(JSON.stringify(receipt)),
+      onRow: receipt => console.log(JSON.stringify({ event: 'row_verified', ...receipt })) });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   if (process.argv.length === 3 && process.argv[2] === '--help') {
-    console.log('Usage: node --import tsx scripts/cutover-operator.ts <status|preview|stage|begin|row|rows|finish> --config private-config.json --request private-request.json [--item-id UUID]\nNo credentials, clock overrides or automatic retries. status is read-only recovery, never resubmission approval. rows explicitly processes one reviewed batch sequentially in one session, skips VERIFIED and stops at the first held/error row; finish remains separate.');
+    console.log('Usage: node --import tsx scripts/cutover-operator.ts <status|preview|stage|begin|row|rows|finish|recover> --config private-config.json --request private-request.json [--item-id UUID]\nNo credentials, clock overrides or automatic retries. recover is one trusted 30-minute session: it validates every target and all orders, resumes only PENDING rows, and performs final read-back/activation while preserving the original order watermark.');
   } else operatorMain(process.argv.slice(2)).then(result => console.log(JSON.stringify(result, null, 2))).catch(error => {
     console.error(JSON.stringify(safeOperatorError(error))); process.exitCode = 1;
   });

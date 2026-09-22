@@ -264,6 +264,34 @@ npm run cutover:operate -- finish \
 
 The bounded session reduces repeated authentication/metadata work, but it does not extend the freeze or remove complete-order/readback checks. Read-only timing and a full isolated rehearsal are prerequisites, not reasons to use stale evidence. If a process dies, inspect `status` and durable row evidence before deciding whether untouched pending rows can continue; never interpret a rerunnable command as permission to repeat an uncertain PUT.
 
+### Recovering an expired, partially verified batch
+
+Use `recover` only when the original batch remains `ALIGNING`, at least one row is `VERIFIED`, every other row is still untouched `PENDING`, and there are no `PROCESSING`, `UNKNOWN` or `BLOCKED` rows. It does not restage, change the original freeze, or provide an uncertainty override. Obtain a new explicit confirmation that **store-wide Ecwid ordering and every pilot physical movement are paused**. Create a new private request containing exactly:
+
+```json
+{
+  "operation_id": "THE-EXISTING-OPERATION-UUID",
+  "expected_hash": "THE-EXISTING-REVIEW-HASH",
+  "recovery_id": "A-NEW-RECOVERY-UUID",
+  "recovery_freeze": {
+    "confirmed": true,
+    "started_at": "CURRENT-UTC-PAUSE-START"
+  }
+}
+```
+
+Run one trusted session; do not split it into ad hoc row commands:
+
+```sh
+npm run cutover:operate -- recover \
+  --config import-data/operator/operator.json \
+  --request import-data/operator/recovery.json
+```
+
+Before the first PUT, the command verifies the pinned deployment and disabled flags, every live target identity/policy/quantity, and the complete live order set. A VERIFIED row must still equal its target; a PENDING row must still equal its original expected Ecwid quantity. It emits a hash-bound preflight receipt, skips all VERIFIED rows without replay, and processes only PENDING rows through the existing durable `PROCESSING → VERIFIED/UNKNOWN/BLOCKED` journal. It stops at the first failure and never retries an uncertain write.
+
+The recovery lease is 30 minutes from the exact newly confirmed pause. The command keeps at least five minutes for the final 76-target and complete-order readback, checks the live deployment immediately before each changed-row PUT and before activation, and leaves the batch `ALIGNING` on a pure pre-write/activation lease expiry so another explicitly approved pause can revalidate it. Final activation still writes `orders_tracking_started` from the **original** batch freeze. Retain the private request, preflight evidence hash, row receipts and final receipt together.
+
 Activation must seed `orders_tracking_started` from the **original freeze timestamp**, not the activation time. That protects the gap between opening collection and the first poll: orders created and completed in that interval must still be reviewed. Activating a database batch does not toggle deployment flags or automatically publish a hostname.
 
 ## Publish, verify and resume
