@@ -41,7 +41,7 @@ beforeEach(() => {
     VALUES('item-1','NUT','Nut','BIN-NUT','1001',100,100),('item-2','BOLT','Bolt','BIN-BOLT','1002',100,100)`).run();
   db = adapter(sqlite);
   env = { DB: db, ECWID_MODE: 'live', ECWID_STORE_ID: '123', ECWID_TOKEN: 'test-token',
-    ECWID_CLIENT_SECRET: 'test-secret', LIVE_SYNC_ENABLED: 'true',
+    ECWID_CLIENT_SECRET: 'test-secret', LIVE_SYNC_ENABLED: 'true', ORDER_SYNC_ENABLED: 'true',
     SYNC_QUEUE: { send: vi.fn().mockResolvedValue(undefined) } as unknown as Queue };
 });
 afterEach(() => { sqlite.close(); vi.restoreAllMocks(); });

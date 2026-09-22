@@ -198,9 +198,33 @@ describe('full snapshot assembly', () => {
     expect(snapshot.catalogue).toMatchObject({ dry_run: true, complete: true, product_count: 1, stock_target_count: 1, reservations_confirmed: false });
     expect(snapshot.catalogue.stock_targets[0]).toMatchObject({ combinationId: '501', quantity: 7, sku: '0008' });
     expect(snapshot.orderReview).toMatchObject({ orders_checked: 1, pending_order_count: 1, reservations_confirmed: false });
+    expect(snapshot.openingOrders).toMatchObject({ kind: 'READONLY_ORDERS', schema_version: 1, dry_run: true, complete: true,
+      store_id: '2442119', orders_checked: 1, pending_order_count: 1, line_count: 1,
+      orders: [{ id: 'ORDER', items: [{ id: '1', productId: '1001', combinationId: '501', digital: false,
+        trackQuantity: true, selectedOptions: [{ name: 'Length', value: '20 mm' }] }] }] });
+    expect(snapshot.openingOrders.creation_cutoff).toBe(Math.floor(Date.parse(snapshot.openingOrders.started_at) / 1000));
     expect(JSON.stringify(snapshot)).not.toContain('secret_test_only');
     expect(JSON.stringify(snapshot)).not.toContain('hidden@example.com');
     expect(JSON.stringify(snapshot)).not.toContain('private');
+  });
+
+  it('retains blocking digital evidence and redacts unsupported customer options in opening evidence', async () => {
+    const fetcher = vi.fn(async input => new URL(String(input)).pathname.endsWith('/products')
+      ? Response.json({ total: 0, count: 0, offset: 0, items: [] })
+      : Response.json({ total: 2, count: 2, offset: 0, items: [
+        { id: '12', paymentStatus: 'PAID', fulfillmentStatus: 'PROCESSING', updateTimestamp: 1,
+          items: [{ id: 1, productId: 1, sku: 'ONE', name: 'Test', quantity: 1, digital: true, trackQuantity: false,
+            selectedOptions: [{ name: 'Engraving', value: 'private@example.com', type: 'TEXT',
+              files: [{ adminUrl: 'https://private.example/upload' }] }] }] },
+        { id: '13', paymentStatus: 'PAID', fulfillmentStatus: 'READY_FOR_PICKUP', updateTimestamp: 1,
+          items: [{ id: 2, productId: 2, sku: 'TWO', name: 'Packed test', quantity: 1 }] }
+      ] }));
+    const result = await fetchReadOnlySnapshot({ storeId: '2442119', token: 'test' }, fetcher);
+    expect(result.openingOrders).toMatchObject({ orders_checked: 2, pending_order_count: 1, line_count: 1 });
+    expect(result.openingOrders.orders[0].items[0]).toMatchObject({ digital: true, trackQuantity: false,
+      selectedOptions: [{ type: 'REDACTED' }] });
+    expect(JSON.stringify(result)).not.toContain('private@example.com');
+    expect(JSON.stringify(result)).not.toContain('private.example');
   });
 
   it('fails closed rather than declaring completeness for fractional historical order quantities', async () => {

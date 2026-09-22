@@ -45,7 +45,7 @@ beforeEach(() => {
   sqlite.prepare("UPDATE items SET active=1 WHERE id='supplier'").run();
   sqlite.prepare(`INSERT INTO items(id,sku,name,scan_code,ecwid_product_id,on_hand,last_ecwid_quantity)
     VALUES('local','LOCAL-BOLT','Shelf bolt','LOCAL-BOLT','200',10,10)`).run();
-  env = {DB:db,ECWID_MODE:'live',LIVE_SYNC_ENABLED:'true',ECWID_STORE_ID:'123',ECWID_TOKEN:'test-token',
+  env = {DB:db,ECWID_MODE:'live',LIVE_SYNC_ENABLED:'true',ORDER_SYNC_ENABLED:'true',ECWID_STORE_ID:'123',ECWID_TOKEN:'test-token',
     SYNC_QUEUE:{send:vi.fn().mockResolvedValue(undefined)} as unknown as Queue};
 });
 afterEach(() => {sqlite.close();vi.restoreAllMocks();});

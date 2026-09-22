@@ -15,13 +15,15 @@
   "vars": {
     "ECWID_MODE": "demo",
     "LIVE_SYNC_ENABLED": "false",
+    "ORDER_SYNC_ENABLED": "false",
     "INVENTORY_ENABLED": "false",
     "ECWID_STORE_ID": "",
     "ECWID_TOKEN": "",
     "ECWID_CLIENT_SECRET": "",
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": "",
-    "ADMIN_EMAILS": ""
+    "ADMIN_EMAILS": "",
+    "STAFF_EMAILS": ""
   },
   "d1_databases": [{
     "binding": "DB",

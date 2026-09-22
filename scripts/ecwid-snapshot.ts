@@ -111,7 +111,23 @@ export async function fetchReadOnlySnapshot(credentials: { storeId: string; toke
     reservations_confirmed: false, orders: pending,
     note: 'Ordered quantity is not unpicked quantity. Confirm prior physical picks and stale fulfillment statuses before any stock alignment. Orders created after the cutoff are excluded. No reservation quantities have been approved.'
   };
-  return { catalogue, orderReview };
+  const pendingIds = new Set(pending.map(order => order.id));
+  // Separate normalized evidence for the opening importer. Do not drop digital
+  // or stock-policy evidence, and never save customer-entered text/file URLs.
+  const openingPending = orders.filter(order => pendingIds.has(order.id)).map(order => ({
+    ...order, items: order.items.map(line => ({ ...line,
+      selectedOptions: canonicalVariationOptions(line.selectedOptions)
+        ?? [{ name: 'Unsupported selection', value: 'Redacted', type: 'REDACTED' }]
+    }))
+  }));
+  const openingOrders = {
+    kind: 'READONLY_ORDERS' as const, schema_version: 1 as const, dry_run: true as const, complete: true as const,
+    store_id: credentials.storeId, started_at: started.toISOString(), completed_at: completedAt,
+    creation_cutoff: Math.floor(started.getTime() / 1000), orders_checked: orders.length,
+    pending_order_count: openingPending.length, line_count: openingPending.reduce((count, order) => count + order.items.length, 0),
+    orders: openingPending
+  };
+  return { catalogue, orderReview, openingOrders };
 }
 
 export function renderOrdersReview(report: ReturnType<typeof pendingOrderReview>, storeId: string): string {
@@ -137,6 +153,7 @@ async function main() {
   const files = [
     ['catalog.json', JSON.stringify(snapshot.catalogue, null, 2) + '\n'],
     ['orders-review.json', JSON.stringify(snapshot.orderReview, null, 2) + '\n'],
+    ['opening-orders.json', JSON.stringify(snapshot.openingOrders, null, 2) + '\n'],
     ['orders-review.html', renderOrdersReview(snapshot.orderReview.orders, snapshot.catalogue.store_id)]
   ];
   if (files.some(([, text]) => Buffer.byteLength(text) > 30_000_000)) throw new Error('A snapshot output exceeded the private review size limit.');

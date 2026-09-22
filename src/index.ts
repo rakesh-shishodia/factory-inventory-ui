@@ -4,6 +4,7 @@ import { createMovement, dashboard, getItem, getOrder, listItems, listMovements,
 import { json, objectBody, readJson, requireSameOrigin } from './http';
 import { previewImport } from './opening-import';
 import { stageOpeningImport } from './opening-apply';
+import { previewOpeningCutover, stageOpeningCutover } from './opening-cutover';
 import { EcwidError } from './ecwid';
 import { createAllocation, listAllocations, validateAllocationInput } from './supplier';
 import { enqueueSync, ingestWebhook, pollOrders, processSyncMessage, pumpSync, refreshOrder, type SyncMessage } from './sync';
@@ -28,6 +29,7 @@ async function routes(request: Request, env: Env, ctx: ExecutionContext): Promis
   if (!['GET', 'HEAD'].includes(request.method)) requireSameOrigin(request);
   if (path === '/api/session' && request.method === 'GET') {
     return json({ ...identity, mode: env.ECWID_MODE, live_sync_enabled: env.LIVE_SYNC_ENABLED === 'true',
+      order_sync_enabled: env.ECWID_MODE === 'demo' || env.ORDER_SYNC_ENABLED === 'true',
       inventory_enabled: env.ECWID_MODE === 'demo' || env.INVENTORY_ENABLED === 'true' });
   }
   if (path === '/api/dashboard' && request.method === 'GET') return json(await dashboard(env.DB));
@@ -52,7 +54,7 @@ async function routes(request: Request, env: Env, ctx: ExecutionContext): Promis
     try { id = decodeURIComponent(orderMatch[1]); }
     catch { throw new DomainError(400, 'INVALID_ORDER_ID', 'Enter a valid Ecwid order ID.'); }
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw new DomainError(400, 'INVALID_ORDER_ID', 'Enter a valid Ecwid order ID.');
-    if (env.ECWID_MODE === 'live') await refreshOrder(env, id);
+    if (env.ECWID_MODE === 'live' && (env.ORDER_SYNC_ENABLED === 'true' || request.method === 'POST')) await refreshOrder(env, id);
     return json({ order: await getOrder(env.DB, id) });
   }
   if (path === '/api/allocations' && request.method === 'GET') return json({ allocations: await listAllocations(env.DB) });
@@ -122,10 +124,22 @@ async function routes(request: Request, env: Env, ctx: ExecutionContext): Promis
   if (path === '/api/import/stage' && request.method === 'POST') {
     requireAdmin(identity);
     if (!env.ECWID_STORE_ID) throw new DomainError(409, 'IMPORT_STORE_REQUIRED', 'Configure the exact Ecwid store before staging opening stock.');
-    if (env.INVENTORY_ENABLED !== 'false' || env.LIVE_SYNC_ENABLED !== 'false') {
+    if (env.INVENTORY_ENABLED !== 'false' || env.LIVE_SYNC_ENABLED !== 'false' || env.ORDER_SYNC_ENABLED !== 'false') {
       throw new DomainError(409, 'IMPORT_REQUIRES_DISABLED_LIVE_FLAGS', 'Disable inventory recording and live sync before staging opening stock.');
     }
     const result = await stageOpeningImport(env.DB, await readJson(request, 10_000_000), { storeId: env.ECWID_STORE_ID, actor: identity.actor });
+    return json(result, result.duplicate ? 200 : 201);
+  }
+  if (['/api/cutover/preview', '/api/cutover/stage'].includes(path) && request.method === 'POST') {
+    requireAdmin(identity);
+    if (!env.ECWID_STORE_ID) throw new DomainError(409, 'IMPORT_STORE_REQUIRED', 'Configure the exact Ecwid store before preparing opening stock.');
+    if (env.INVENTORY_ENABLED !== 'false' || env.LIVE_SYNC_ENABLED !== 'false' || env.ORDER_SYNC_ENABLED !== 'false') {
+      throw new DomainError(409, 'CUTOVER_REQUIRES_DISABLED_FLAGS', 'Disable inventory recording, stock sync and order sync before preparing opening stock.');
+    }
+    const input = await readJson(request, 10_000_000);
+    const policy = { storeId: env.ECWID_STORE_ID, actor: identity.actor };
+    if (path.endsWith('/preview')) return json(await previewOpeningCutover(input, policy));
+    const result = await stageOpeningCutover(env.DB, input, policy);
     return json(result, result.duplicate ? 200 : 201);
   }
   throw new DomainError(404, 'NOT_FOUND', 'This endpoint does not exist.');

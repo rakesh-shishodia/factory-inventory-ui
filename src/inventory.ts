@@ -7,7 +7,7 @@ const itemSelect = `SELECT s.*, s.supplier_paid_demand AS paid_demand,
   s.supplier_awaiting_payment_demand AS awaiting_payment_demand FROM item_stock s`;
 const pickableOrder = `o.payment_status = 'PAID' AND o.needs_review = 0
   AND o.fulfillment_status IN ('AWAITING_PROCESSING', 'PROCESSING')
-  AND EXISTS (SELECT 1 FROM order_lines l WHERE l.order_id = o.id AND l.ordered_qty > l.picked_qty)`;
+  AND EXISTS (SELECT 1 FROM order_lines l WHERE l.order_id = o.id AND l.management_mode='APP' AND l.ordered_qty > l.picked_qty)`;
 
 export async function getItem(db: D1Database, code: string): Promise<Item> {
   const item = await db.prepare(`${itemSelect} WHERE id = ? OR sku = ? OR scan_code = ? LIMIT 1`)
@@ -27,7 +27,8 @@ export async function listItems(db: D1Database, search = ''): Promise<Item[]> {
 async function attachLines(db: D1Database, rows: Omit<Order, 'lines'>[]): Promise<Order[]> {
   if (!rows.length) return [];
   const result = await db.prepare(`SELECT l.*, l.ordered_qty - l.picked_qty AS remaining_qty,
-      i.ecwid_combination_id, i.ecwid_option_signature, i.inventory_mode, i.on_hand,
+      COALESCE(i.ecwid_combination_id,w.ecwid_combination_id) AS ecwid_combination_id,
+      COALESCE(i.ecwid_option_signature,w.ecwid_option_signature) AS ecwid_option_signature, i.inventory_mode, i.on_hand,
       i.opening_verified,i.active AS item_active,
       COALESCE(a.allocated_qty,0) AS allocated_qty, i.free AS free_qty,
       CASE WHEN i.inventory_mode='SUPPLIER_BACKED_UNLIMITED'
@@ -46,6 +47,7 @@ async function attachLines(db: D1Database, rows: Omit<Order, 'lines'>[]): Promis
       'REVIEW' AS fulfillment_state
     FROM order_lines l JOIN orders o ON o.id=l.order_id
       LEFT JOIN item_stock i ON i.id=l.item_id
+      LEFT JOIN workbook_managed_targets w ON w.id=l.workbook_target_id
       LEFT JOIN supplier_line_allocations a ON a.order_line_id=l.id
     WHERE l.order_id IN (${rows.map(() => '?').join(',')}) ORDER BY l.order_id, l.name, l.id`)
     .bind(...rows.map(row => row.id)).all<OrderLine & { line_needs_review: number }>();
@@ -53,7 +55,8 @@ async function attachLines(db: D1Database, rows: Omit<Order, 'lines'>[]): Promis
   const orders = new Map(rows.map(row => [row.id, row]));
   for (const line of result.results) {
     const order = orders.get(line.order_id)!;
-    if (order.needs_review || line.line_needs_review || !line.item_id || line.inventory_mode === null) line.fulfillment_state = 'REVIEW';
+    if (line.management_mode === 'WORKBOOK') line.fulfillment_state = 'WORKBOOK_MANAGED';
+    else if (order.needs_review || line.line_needs_review || !line.item_id || line.inventory_mode === null) line.fulfillment_state = 'REVIEW';
     else if (line.remaining_qty === 0) line.fulfillment_state = 'PICKED';
     else if (!['PAID', 'AWAITING_PAYMENT'].includes(order.payment_status)
       || !['AWAITING_PROCESSING', 'PROCESSING'].includes(order.fulfillment_status)) line.fulfillment_state = 'CLOSED';
@@ -107,6 +110,7 @@ const guardErrors: Record<string, string> = {
   INSUFFICIENT_LINE_ALLOCATION: 'Assign received stock to this order line before picking that quantity.',
   SUPPLIER_OPENING_REQUIRED: 'A verified physical opening count is required before supplier stock can move.',
   INVENTORY_MODE_MISMATCH: 'The inventory mode changed. Review the item before recording this movement.',
+  WORKBOOK_LINE_HANDLED_EXTERNALLY: 'This order line remains workbook-managed. Do not record its stock in this app.',
 };
 
 export async function createMovement(db: D1Database, value: unknown, actor: string): Promise<{ movement: Movement; duplicate: boolean; sync_status: Movement['sync_status'] }> {

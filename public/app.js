@@ -74,6 +74,7 @@ function variationLabel(item) {
 function value(n) { return number.format(Number(n || 0)); }
 function knownValue(n) { return n === null || n === undefined ? '—' : value(n); }
 function supplierItem(item) { return item?.inventory_mode === 'SUPPLIER_BACKED_UNLIMITED'; }
+function workbookLine(line) { return line?.management_mode === 'WORKBOOK'; }
 function unknownOpening(item) { return supplierItem(item) && item.opening_verified !== 1; }
 function operationalItem(item) { return item?.active === 1 && !unknownOpening(item); }
 function supplierLineEligible(line) { return !unknownOpening(line) && line.item_active === 1 && !['REVIEW', 'CLOSED'].includes(line.fulfillment_state); }
@@ -88,17 +89,19 @@ function sameId(a, b) { return String(a) === String(b); }
 function payment(order) { return String(order?.payment_status || '').toUpperCase(); }
 function remaining(line) { return Math.max(0, Number(line.remaining_qty ?? Number(line.ordered_qty || 0) - Number(line.picked_qty || 0))); }
 function orderRemaining(order) { return order.lines?.reduce((sum, line) => sum + remaining(line), 0) ?? Number(order.remaining_qty || 0); }
+function appOrderRemaining(order) { return order.lines?.filter(line => !workbookLine(line)).reduce((sum, line) => sum + remaining(line), 0) ?? Number(order.remaining_qty || 0); }
 function orderNumber(order) { return String(order.order_number || order.number || order.ecwid_order_number || order.id); }
 function orderCustomer(order) { return order.customer_name || order.customer?.name || order.customer_email || order.email || 'Ecwid customer'; }
 function canPick(order) {
   const fulfillment = String(order?.fulfillment_status || '').toUpperCase();
-  return payment(order) === 'PAID' && !order.needs_review && ['AWAITING_PROCESSING', 'PROCESSING'].includes(fulfillment) && orderRemaining(order) > 0;
+  return payment(order) === 'PAID' && !order.needs_review && ['AWAITING_PROCESSING', 'PROCESSING'].includes(fulfillment) && appOrderRemaining(order) > 0;
 }
 function canAllocate(order) {
   return !order.needs_review && ['PAID', 'AWAITING_PAYMENT'].includes(payment(order))
     && ['AWAITING_PROCESSING', 'PROCESSING'].includes(String(order.fulfillment_status).toUpperCase());
 }
 function pickableQuantity(line) {
+  if (workbookLine(line)) return 0;
   if (line.fulfillment_state === 'REVIEW') return 0;
   if (supplierItem(line) && !supplierLineEligible(line)) return 0;
   if (Number.isFinite(line.pickable_qty)) return Math.max(0, Math.min(remaining(line), line.pickable_qty));
@@ -276,7 +279,8 @@ function renderOrders() {
     top.append(element('h3', '', `#${orderNumber(order)}`), order.needs_review ? badge('Needs review', 'danger') : payment(order) === 'PAID' ? badge('Paid', 'success') : badge('Awaiting payment', 'warning'));
     const bottom = element('div', 'order-tile-bottom');
     const lineCount = order.lines?.length ?? order.items_count;
-    bottom.append(element('span', '', `${value(orderRemaining(order))} units left${lineCount ? ` · ${value(lineCount)} ${lineCount === 1 ? 'item' : 'items'}` : ''}`), icon('chevron'));
+    const externalCount = order.lines?.filter(workbookLine).length || 0;
+    bottom.append(element('span', '', `${value(appOrderRemaining(order))} app units left${externalCount ? ` · ${value(externalCount)} workbook ${externalCount === 1 ? 'line' : 'lines'}` : lineCount ? ` · ${value(lineCount)} ${lineCount === 1 ? 'item' : 'items'}` : ''}`), icon('chevron'));
     tile.append(top, element('p', 'order-tile-meta', orderCustomer(order)), bottom);
     tile.addEventListener('click', () => selectOrder(order.id, true));
     list.append(tile);
@@ -352,8 +356,9 @@ function renderOrderDetail() {
     const description = element('span', 'item-description');
     description.append(element('strong', '', line.name || line.sku), element('small', '', line.sku));
     if (variationLabel(line)) description.append(element('small', '', variationLabel(line)));
-    const qty = element('span', 'line-quantity', `${value(line.picked_qty)} / ${value(line.ordered_qty)}`);
-    qty.append(element('small', '', remaining(line) === 0 ? 'Complete' : `${value(remaining(line))} remaining`));
+    if (workbookLine(line)) description.append(element('small', 'inventory-hold', 'Workbook-managed · handle outside this app'));
+    const qty = element('span', 'line-quantity', workbookLine(line) ? value(line.ordered_qty) : `${value(line.picked_qty)} / ${value(line.ordered_qty)}`);
+    qty.append(element('small', '', workbookLine(line) ? 'Not tracked here' : remaining(line) === 0 ? 'Complete' : `${value(remaining(line))} remaining`));
     row.append(symbol, description, qty);
     row.addEventListener('click', () => {
       if (!state.form || state.pending || state.submitting) return;
@@ -366,22 +371,25 @@ function renderOrderDetail() {
     lines.append(entry);
   }
   host.append(lines);
-  const ordered = (order.lines || []).reduce((sum, line) => sum + Number(line.ordered_qty || 0), 0);
-  const picked = (order.lines || []).reduce((sum, line) => sum + Number(line.picked_qty || 0), 0);
+  const appLines = (order.lines || []).filter(line => !workbookLine(line));
+  const hasWorkbook = (order.lines || []).some(workbookLine);
+  const ordered = appLines.reduce((sum, line) => sum + Number(line.ordered_qty || 0), 0);
+  const picked = appLines.reduce((sum, line) => sum + Number(line.picked_qty || 0), 0);
   const progress = element('div', 'order-progress');
   const track = element('div', 'progress-track');
   const bar = element('div', 'progress-bar');
   bar.style.width = `${Math.min(100, ordered ? picked / ordered * 100 : 0)}%`;
   track.append(bar);
-  progress.append(track, element('span', 'progress-caption', `${value(picked)} of ${value(ordered)} units picked`));
+  progress.append(track, element('span', 'progress-caption', `${value(picked)} of ${value(ordered)} ${hasWorkbook ? 'app ' : ''}units picked`));
   host.append(progress);
+  if (hasWorkbook) host.append(element('p', 'supplier-order-note', 'Workbook-managed lines are outside this pilot. Record their stock in the workbook and check them separately before packing or shipping. App progress does not confirm that the whole order is complete.'));
   if ((order.lines || []).some(line => supplierItem(line) && remaining(line) > 0)) {
     host.append(element('p', 'supplier-order-note', 'Supplier items need received stock assigned to their exact order line. On Paid orders, other eligible lines may be picked. An order is not fully picked until every required line is picked.'));
   }
   if (!canPick(order)) {
     const message = order.needs_review ? 'This order needs review before picking. Check Activity & sync for the reason.'
       : payment(order) !== 'PAID' ? 'Picking is locked until this order is marked Paid in Ecwid. Received supplier stock can be assigned without picking it.'
-        : orderRemaining(order) === 0 ? 'All items are picked. Shipping is managed separately in Ecwid.'
+        : appOrderRemaining(order) === 0 ? hasWorkbook ? 'All app-managed items are picked. Workbook-managed lines still need an outside check; this app cannot confirm whole-order completion.' : 'All items are picked. Shipping is managed separately in Ecwid.'
           : 'This order cannot be picked in its current status.';
     host.append(element('div', 'form-readonly', message));
     if (state.view === 'pick') state.form = null;

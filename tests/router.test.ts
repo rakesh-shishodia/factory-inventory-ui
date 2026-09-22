@@ -37,6 +37,7 @@ function pick(quantity = 1) {
 function authorizeLive() {
   env.ECWID_MODE = 'live';
   env.INVENTORY_ENABLED = 'true';
+  env.ORDER_SYNC_ENABLED = 'true';
   vi.spyOn(auth, 'authenticate').mockResolvedValue({ actor: 'demo@local', role: 'admin' });
 }
 
@@ -53,8 +54,8 @@ beforeEach(() => {
     VALUES('ORDER-1','PAID',?,?)`).run(timestamp, timestamp);
   sqlite.prepare(`INSERT INTO order_lines(id,order_id,ecwid_line_id,item_id,sku,name,ordered_qty)
     VALUES('LINE-1','ORDER-1','REMOTE-LINE','item-1','NUT','Nut',3)`).run();
-  env = { DB: sqliteD1(sqlite), ECWID_MODE: 'demo', INVENTORY_ENABLED: 'false', LIVE_SYNC_ENABLED: 'false',
-    ECWID_STORE_ID: '', ECWID_TOKEN: '', ECWID_CLIENT_SECRET: '', ACCESS_TEAM_DOMAIN: '', ACCESS_AUD: '', ADMIN_EMAILS: '',
+  env = { DB: sqliteD1(sqlite), ECWID_MODE: 'demo', INVENTORY_ENABLED: 'false', LIVE_SYNC_ENABLED: 'false', ORDER_SYNC_ENABLED: 'false',
+    ECWID_STORE_ID: '', ECWID_TOKEN: '', ECWID_CLIENT_SECRET: '', ACCESS_TEAM_DOMAIN: '', ACCESS_AUD: '', ADMIN_EMAILS: '', STAFF_EMAILS: '',
     ASSETS: { fetch: vi.fn().mockResolvedValue(new Response('<html>app</html>', { headers: { 'Content-Type': 'text/html' } })) } as unknown as Fetcher,
     SYNC_QUEUE: { send: vi.fn() } as unknown as Queue };
   background = [];

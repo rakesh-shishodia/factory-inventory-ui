@@ -38,7 +38,7 @@ beforeEach(() => {
     VALUES('item-1','NUT-M8','M8 nut','BIN-M8','1001',20,20)`).run();
   db = d1Adapter(sqlite);
   env = { DB: db, ECWID_MODE: 'live', ECWID_STORE_ID: '123', ECWID_TOKEN: 'test-token',
-    ECWID_CLIENT_SECRET: 'test-client-secret', LIVE_SYNC_ENABLED: 'true',
+    ECWID_CLIENT_SECRET: 'test-client-secret', LIVE_SYNC_ENABLED: 'true', ORDER_SYNC_ENABLED: 'true',
     SYNC_QUEUE: { send: vi.fn().mockResolvedValue(undefined) } as unknown as Queue };
 });
 afterEach(() => { sqlite.close(); vi.restoreAllMocks(); });

@@ -26,7 +26,7 @@ beforeEach(() => {
   insertVariation('other', '203', 'M10', 60);
   db = sqliteD1(sqlite);
   env = { DB: db, ECWID_MODE: 'live', ECWID_STORE_ID: '123', ECWID_TOKEN: 'test-token',
-    ECWID_CLIENT_SECRET: 'test-secret', LIVE_SYNC_ENABLED: 'true',
+    ECWID_CLIENT_SECRET: 'test-secret', LIVE_SYNC_ENABLED: 'true', ORDER_SYNC_ENABLED: 'true',
     SYNC_QUEUE: { send: vi.fn().mockResolvedValue(undefined) } as unknown as Queue };
 });
 afterEach(() => { sqlite.close(); vi.restoreAllMocks(); });

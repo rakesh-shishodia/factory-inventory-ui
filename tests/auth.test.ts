@@ -17,7 +17,8 @@ vi.mock('jose', async importOriginal => {
 let privateKey: CryptoKey;
 let otherPrivateKey: CryptoKey;
 const live = { ECWID_MODE: 'live', ACCESS_TEAM_DOMAIN: 'https://inventory-team.cloudflareaccess.com',
-  ACCESS_AUD: 'inventory-application-audience', ADMIN_EMAILS: ' owner@example.com , manager@example.com' };
+  ACCESS_AUD: 'inventory-application-audience', ADMIN_EMAILS: ' owner@example.com , manager@example.com',
+  STAFF_EMAILS: ' owner@example.com , manager@example.com , picker@example.com' };
 
 beforeAll(async () => {
   const keys = await generateKeyPair('RS256');
@@ -55,6 +56,16 @@ describe('verified staff identity', () => {
     await expect(authenticate(request(), live)).rejects.toMatchObject({ status: 401, code: 'SIGN_IN_REQUIRED' });
     await expect(authenticate(request(await token({ key: otherPrivateKey })), live))
       .rejects.toMatchObject({ status: 401, code: 'INVALID_SESSION' });
+  });
+
+  it('rejects a valid Access identity outside the exact staff allowlist, including an unlisted admin', async () => {
+    const assertion = await token({ email: 'outsider@example.com' });
+    await expect(authenticate(request(assertion), { ...live, ADMIN_EMAILS: 'outsider@example.com' }))
+      .rejects.toMatchObject({ status: 403, code: 'STAFF_NOT_ALLOWED' });
+    await expect(authenticate(request(await token()), { ...live, STAFF_EMAILS: '' }))
+      .rejects.toMatchObject({ status: 503, code: 'ACCESS_NOT_CONFIGURED' });
+    await expect(authenticate(request(await token()), { ...live, STAFF_EMAILS: 'example.com' }))
+      .rejects.toMatchObject({ status: 503, code: 'ACCESS_NOT_CONFIGURED' });
   });
 
   it.each([

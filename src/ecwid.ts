@@ -291,6 +291,9 @@ export class EcwidClient {
     if (!/^\d+$/.test(credentials.storeId) || !credentials.token.trim()) {
       throw new EcwidError('Ecwid store ID and token are required.', 'REJECTED');
     }
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
+      throw new EcwidError('Ecwid timeout must be between 1 and 60000 milliseconds.', 'REJECTED');
+    }
     this.base = `https://app.ecwid.com/api/v3/${credentials.storeId}`;
   }
 
@@ -315,7 +318,7 @@ export class EcwidClient {
       }
       if (!response.ok) {
         await response.body?.cancel();
-        const definiteRejection = [400, 401, 403, 404, 405, 422].includes(response.status);
+        const definiteRejection = [400, 401, 402, 403, 404, 405, 409, 422].includes(response.status);
         throw new EcwidError(`Ecwid returned HTTP ${response.status}.`,
           definiteRejection ? 'REJECTED' : isWrite ? 'UNKNOWN' : 'RETRYABLE', response.status);
       }
@@ -364,6 +367,29 @@ export class EcwidClient {
 
   async getProductStockTargets(productId: string): Promise<EcwidProduct[]> {
     return productStockTargets(await this.getProductStock(productId));
+  }
+
+  /**
+   * One-time approved opening alignment, not the normal movement/outbox path.
+   * The caller must freeze sales/movements, persist a write claim, and freshly
+   * verify the exact finite stock target before calling. The request contains
+   * only quantity, never an inventory policy or supplier-mode change.
+   * A successful confirmation still requires a separate read-back by the caller.
+   * Docs: /products/update-product and /products/product-variations/update-product-variation.
+   */
+  async setStockQuantity(productId: string, quantity: number, combinationId: string | null = null): Promise<{ warning?: string }> {
+    if (typeof productId !== 'string' || !/^[1-9]\d{0,30}$/.test(productId)
+      || (combinationId !== null && (typeof combinationId !== 'string' || !/^[1-9]\d{0,30}$/.test(combinationId)))
+      || !Number.isSafeInteger(quantity) || quantity < 0 || quantity > 2_147_483_647) {
+      throw new EcwidError('Invalid product ID, variation ID, or opening stock quantity.', 'REJECTED');
+    }
+    const target = combinationId === null ? `/products/${productId}` : `/products/${productId}/combinations/${combinationId}`;
+    const value = await this.request(target, 'PUT', { quantity });
+    let raw: Record<string, unknown>;
+    try { raw = record(value); } catch { throw new EcwidError('Ecwid returned an invalid opening stock confirmation.', 'UNKNOWN'); }
+    if (raw.updateCount === 0) throw new EcwidError('Ecwid did not update this stock target.', 'REJECTED');
+    if (raw.updateCount !== 1) throw new EcwidError('Ecwid did not confirm whether the opening stock was applied.', 'UNKNOWN');
+    return typeof raw.warning === 'string' ? { warning: raw.warning } : {};
   }
 
   async adjustStock(productId: string, delta: number, combinationId?: string | null): Promise<{ warning?: string }> {

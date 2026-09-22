@@ -1,8 +1,9 @@
 export type MovementType = 'ECWID_PICK' | 'EMAIL_SALE' | 'INTERNAL_USE' | 'RESTOCK';
 export type SyncStatus = 'NOT_REQUIRED' | 'PENDING' | 'PROCESSING' | 'APPLIED' | 'UNKNOWN' | 'BLOCKED';
 export type InventoryMode = 'STOCK_LIMITED' | 'SUPPLIER_BACKED_UNLIMITED';
+export type LineManagementMode = 'APP' | 'WORKBOOK';
 export type LineFulfillmentState = 'REVIEW' | 'PICKED' | 'CLOSED' | 'AWAITING_PAYMENT'
-  | 'READY_TO_PICK' | 'AWAITING_ASSIGNMENT' | 'AWAITING_SUPPLIER' | 'AWAITING_STOCK';
+  | 'READY_TO_PICK' | 'AWAITING_ASSIGNMENT' | 'AWAITING_SUPPLIER' | 'AWAITING_STOCK' | 'WORKBOOK_MANAGED';
 
 export const PICKABLE_FULFILLMENT_STATUSES: readonly string[] = ['AWAITING_PROCESSING', 'PROCESSING'];
 // Store policy: self-pickup orders reach READY_FOR_PICKUP only after picking and
@@ -58,6 +59,8 @@ export interface OrderLine {
   order_id: string;
   ecwid_line_id: string;
   item_id: string | null;
+  management_mode: LineManagementMode;
+  workbook_target_id: string | null;
   ecwid_combination_id: string | null;
   ecwid_option_signature: string | null;
   sku: string;

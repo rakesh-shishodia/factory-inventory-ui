@@ -1,6 +1,8 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "factory-inventory-local",
+  // Copy to the gitignored wrangler.production.jsonc and supply the real IDs.
+  // Protect the exact hostname with Access before enabling workers_dev.
+  "name": "factory-inventory",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-22",
   "compatibility_flags": ["nodejs_compat"],
@@ -13,25 +15,25 @@
   },
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "vars": {
-    "ECWID_MODE": "demo",
+    "ECWID_MODE": "live",
+    "ECWID_STORE_ID": "2442119",
+    "INVENTORY_ENABLED": "false",
     "LIVE_SYNC_ENABLED": "false",
     "ORDER_SYNC_ENABLED": "false",
-    "ECWID_STORE_ID": "",
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": "",
-    "ADMIN_EMAILS": "",
     "STAFF_EMAILS": "",
-    "INVENTORY_ENABLED": "false"
+    "ADMIN_EMAILS": ""
   },
   "d1_databases": [{
     "binding": "DB",
-    "database_name": "inventory-local",
-    "database_id": "00000000-0000-0000-0000-000000000001",
+    "database_name": "factory-inventory-production",
+    "database_id": "REPLACE_WITH_NEW_INVENTORY_ONLY_DATABASE_ID",
     "migrations_dir": "migrations"
   }],
   "queues": {
-    "producers": [{ "binding": "SYNC_QUEUE", "queue": "inventory-sync-local" }],
-    "consumers": [{ "queue": "inventory-sync-local", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 3 }]
+    "producers": [{ "binding": "SYNC_QUEUE", "queue": "factory-inventory-sync" }],
+    "consumers": [{ "queue": "factory-inventory-sync", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 3 }]
   },
   "triggers": { "crons": ["*/5 * * * *"] }
 }

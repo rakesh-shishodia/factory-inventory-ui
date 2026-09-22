@@ -2,7 +2,7 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { DomainError } from './domain';
 
 export type Actor = { actor: string; role: 'admin' | 'picker' };
-type AuthEnv = Pick<Env, 'ECWID_MODE' | 'ACCESS_TEAM_DOMAIN' | 'ACCESS_AUD' | 'ADMIN_EMAILS'>;
+type AuthEnv = Pick<Env, 'ECWID_MODE' | 'ACCESS_TEAM_DOMAIN' | 'ACCESS_AUD' | 'ADMIN_EMAILS' | 'STAFF_EMAILS'>;
 
 export async function authenticate(request: Request, env: AuthEnv): Promise<Actor> {
   // Demo identity exists only on a loopback development URL. A deployed demo
@@ -11,7 +11,9 @@ export async function authenticate(request: Request, env: AuthEnv): Promise<Acto
   if (env.ECWID_MODE === 'demo' && ['localhost', '127.0.0.1', '[::1]'].includes(hostname)) {
     return { actor: 'demo@local', role: 'admin' };
   }
-  if (env.ECWID_MODE !== 'live' || !env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) {
+  const staff = (env.STAFF_EMAILS ?? '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+  if (env.ECWID_MODE !== 'live' || !env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD || !staff.length
+    || staff.some(email => !/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(email))) {
     throw new DomainError(503, 'ACCESS_NOT_CONFIGURED', 'Staff sign-in is not configured for this deployment.');
   }
   const teamDomain = env.ACCESS_TEAM_DOMAIN.replace(/\/$/, '');
@@ -34,6 +36,7 @@ export async function authenticate(request: Request, env: AuthEnv): Promise<Acto
   } catch {
     throw new DomainError(401, 'INVALID_SESSION', 'Your sign-in has expired or could not be verified. Sign in again.');
   }
+  if (!staff.includes(email)) throw new DomainError(403, 'STAFF_NOT_ALLOWED', 'This email address is not authorized to use the inventory app.');
   const admins = env.ADMIN_EMAILS.split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
   return { actor: email, role: admins.includes(email) ? 'admin' : 'picker' };
 }

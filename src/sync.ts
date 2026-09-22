@@ -1,9 +1,10 @@
 import { EcwidClient, EcwidError, canonicalVariationOptions, parseWebhook, readBoundedJson, verifyWebhookSignature,
   type EcwidOrder, type EcwidWebhook, type EcwidFetch, type EcwidProduct } from './ecwid';
-import { PICKABLE_FULFILLMENT_STATUSES, TERMINAL_FULFILLMENT_STATUSES, type InventoryMode } from './domain';
+import { DomainError, PICKABLE_FULFILLMENT_STATUSES, TERMINAL_FULFILLMENT_STATUSES, type InventoryMode } from './domain';
 
 export type SyncMessage = { kind: 'outbox' | 'webhook'; id: string };
 export type SyncEnv = Pick<Env, 'DB' | 'SYNC_QUEUE' | 'ECWID_MODE' | 'LIVE_SYNC_ENABLED' | 'ECWID_STORE_ID'> & {
+  ORDER_SYNC_ENABLED?: string;
   ECWID_TOKEN?: string;
   ECWID_CLIENT_SECRET?: string;
 };
@@ -31,7 +32,7 @@ function issueStatement(db: D1Database, id: string, kind: string, item: string |
     VALUES (?,?,?,?,?,'OPEN',?) ON CONFLICT(id) DO NOTHING`).bind(id, kind, item, order, message, now());
 }
 
-async function orderHash(order: EcwidOrder): Promise<string> {
+export async function orderSnapshotHash(order: EcwidOrder): Promise<string> {
   const canonical = order.items.map((line) => [line.id, line.productId, line.sku, line.quantity,
     line.combinationId, canonicalVariationOptions(line.selectedOptions) ?? line.selectedOptions, line.digital])
     .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
@@ -50,7 +51,7 @@ export async function upsertOrderSnapshot(db: D1Database, order: EcwidOrder,
     const current = await db.prepare('SELECT needs_review FROM orders WHERE id=?').bind(order.id).first<number>('needs_review');
     return { id: order.id, needs_review: current === 1, skipped: true };
   }
-  const hash = await orderHash(order);
+  const hash = await orderSnapshotHash(order);
   const timestamp = now();
   const lines = JSON.stringify(order.items.map((line) => {
     const options = canonicalVariationOptions(line.selectedOptions);
@@ -60,6 +61,7 @@ export async function upsertOrderSnapshot(db: D1Database, order: EcwidOrder,
       optionSignature: options === null ? null : JSON.stringify(options),
       supported: !line.digital && Boolean(line.sku) && options !== null
         && (line.combinationId ? options.length > 0 : options.length === 0) ? 1 : 0,
+      physicalIdentity: !line.digital && Boolean(line.sku) && options !== null ? 1 : 0,
     };
   }));
   const unsupportedStatus = !['PAID', 'AWAITING_PAYMENT', 'CANCELLED', 'REFUNDED', 'INCOMPLETE'].includes(order.paymentStatus)
@@ -78,23 +80,32 @@ export async function upsertOrderSnapshot(db: D1Database, order: EcwidOrder,
         remote_lines_hash=CASE WHEN orders.remote_lines_hash='' THEN excluded.remote_lines_hash ELSE orders.remote_lines_hash END
       WHERE orders.remote_updated_at<=excluded.remote_updated_at`)
       .bind(order.id, order.paymentStatus, order.fulfillmentStatus, order.updatedAt, timestamp, unsupportedStatus ? 1 : 0, hash),
-    db.prepare(`INSERT INTO order_lines(id,order_id,ecwid_line_id,item_id,sku,name,ordered_qty,picked_qty)
+    db.prepare(`INSERT INTO order_lines(id,order_id,ecwid_line_id,item_id,sku,name,ordered_qty,picked_qty,management_mode,workbook_target_id)
       SELECT ? || ':' || json_extract(j.value,'$.id'), ?, json_extract(j.value,'$.id'),
         CASE WHEN json_extract(j.value,'$.supported')=1 THEN i.id ELSE NULL END,
-        json_extract(j.value,'$.sku'),json_extract(j.value,'$.name'),json_extract(j.value,'$.quantity'),0
+        json_extract(j.value,'$.sku'),json_extract(j.value,'$.name'),json_extract(j.value,'$.quantity'),0,
+        CASE WHEN w.id IS NOT NULL THEN 'WORKBOOK' ELSE 'APP' END,w.id
       FROM json_each(?) j LEFT JOIN items i ON i.ecwid_product_id=json_extract(j.value,'$.productId')
         AND i.ecwid_combination_id IS json_extract(j.value,'$.combinationId')
         AND i.ecwid_option_signature=json_extract(j.value,'$.optionSignature')
         AND i.sku=json_extract(j.value,'$.sku') COLLATE NOCASE AND i.active=1
+      LEFT JOIN workbook_managed_targets w ON json_extract(j.value,'$.physicalIdentity')=1
+        AND w.ecwid_product_id=json_extract(j.value,'$.productId')
+        AND w.ecwid_combination_id IS json_extract(j.value,'$.combinationId')
+        AND w.ecwid_option_signature=json_extract(j.value,'$.optionSignature')
+        AND w.sku=json_extract(j.value,'$.sku') COLLATE NOCASE
+        AND NOT EXISTS(SELECT 1 FROM items conflict WHERE conflict.sku=json_extract(j.value,'$.sku') COLLATE NOCASE
+          OR (conflict.ecwid_product_id=json_extract(j.value,'$.productId')
+            AND conflict.ecwid_combination_id IS json_extract(j.value,'$.combinationId')))
       WHERE EXISTS(SELECT 1 FROM orders WHERE id=? AND remote_updated_at=? AND remote_lines_hash=?)
       ON CONFLICT(order_id,ecwid_line_id) DO NOTHING`)
       .bind(order.id, order.id, lines, order.id, order.updatedAt, hash),
     db.prepare(`UPDATE orders SET needs_review=1 WHERE id=? AND remote_updated_at=? AND (
-      EXISTS(SELECT 1 FROM order_lines WHERE order_id=orders.id AND item_id IS NULL)
+      EXISTS(SELECT 1 FROM order_lines WHERE order_id=orders.id AND management_mode='APP' AND item_id IS NULL)
       OR (payment_status NOT IN ('PAID','AWAITING_PAYMENT') AND EXISTS(
         SELECT 1 FROM order_lines WHERE order_id=orders.id AND picked_qty>0))
       OR (fulfillment_status IN ('READY_FOR_PICKUP','SHIPPED','DELIVERED','OUT_FOR_DELIVERY','RETURNED','WILL_NOT_DELIVER') AND EXISTS(
-        SELECT 1 FROM order_lines WHERE order_id=orders.id AND picked_qty<ordered_qty)))`)
+        SELECT 1 FROM order_lines WHERE order_id=orders.id AND management_mode='APP' AND picked_qty<ordered_qty)))`)
       .bind(order.id, order.updatedAt),
     db.prepare(`INSERT INTO sync_issues(id,kind,item_id,order_id,message,status,created_at)
       SELECT 'order:' || o.id || ':' || coalesce(l.item_id,'unmapped'), 'ORDER_REVIEW', l.item_id, o.id,
@@ -120,6 +131,7 @@ export async function upsertOrderSnapshot(db: D1Database, order: EcwidOrder,
 
 export async function refreshOrder(env: SyncEnv, id: string, fetcher?: EcwidFetch) {
   if (env.ECWID_MODE !== 'live') return { id, demo: true };
+  if (env.ORDER_SYNC_ENABLED !== 'true') throw new DomainError(409, 'ORDER_SYNC_PAUSED', 'Order imports are paused until the reviewed opening cutover is complete.');
   return upsertOrderSnapshot(env.DB, await ecwidClient(env, fetcher).getOrder(id));
 }
 
@@ -136,6 +148,7 @@ export async function enqueueSync(env: SyncEnv, message: SyncMessage): Promise<b
 
 export async function ingestWebhook(request: Request, env: SyncEnv): Promise<Response> {
   if (env.ECWID_MODE !== 'live' || !env.ECWID_CLIENT_SECRET) return Response.json({ error: 'Webhook integration is not configured.' }, { status: 503 });
+  if (env.ORDER_SYNC_ENABLED !== 'true') return Response.json({ error: 'Order imports are paused until cutover is complete.', code: 'ORDER_SYNC_PAUSED' }, { status: 503 });
   let event: EcwidWebhook;
   let raw: unknown;
   try {
@@ -302,7 +315,7 @@ async function refreshMappedProduct(env: SyncEnv, productId: string, fetcher?: E
 }
 
 export async function processWebhook(env: SyncEnv, id: string, fetcher?: EcwidFetch): Promise<void> {
-  if (env.ECWID_MODE !== 'live') return;
+  if (env.ECWID_MODE !== 'live' || env.ORDER_SYNC_ENABLED !== 'true') return;
   const row = await env.DB.prepare(`UPDATE webhook_events SET status='PROCESSING',attempts=attempts+1,updated_at=?
     WHERE event_id=? AND status='PENDING' RETURNING event_id,event_type,entity_id,payload`).bind(now(), id).first<InboxRow>();
   if (!row) return;
@@ -369,6 +382,7 @@ export async function pumpSync(env: SyncEnv): Promise<{ queued: number }> {
 /** Full pagination with a persisted cursor, including old orders that are still awaiting payment. */
 export async function pollOrders(env: SyncEnv, fetcher?: EcwidFetch): Promise<{ processed: number; complete: boolean; demo?: boolean }> {
   if (env.ECWID_MODE !== 'live') return { processed: 0, complete: true, demo: true };
+  if (env.ORDER_SYNC_ENABLED !== 'true') throw new DomainError(409, 'ORDER_SYNC_PAUSED', 'Order imports are paused until the reviewed opening cutover is complete.');
   const client = ecwidClient(env, fetcher);
   await env.DB.prepare(`INSERT INTO sync_state(key,value,updated_at) VALUES ('orders_tracking_started',?,?)
     ON CONFLICT(key) DO NOTHING`).bind(now(), now()).run();
