@@ -3,32 +3,45 @@ import { URL } from 'node:url';
 import { createContext, runInContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 
-const app=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
-const definitions=app.slice(0,app.indexOf("$('#refresh-all').addEventListener"));
-function evaluate(script:string) {
-  const context=createContext({Intl,document:{},localStorage:{getItem:()=>null}});
-  runInContext(definitions,context);
-  runInContext(`const external={management_mode:'WORKBOOK',ordered_qty:3,picked_qty:0,pickable_qty:99};
-    const tracked={management_mode:'APP',ordered_qty:2,picked_qty:0};
-    const mixed={payment_status:'PAID',fulfillment_status:'PROCESSING',needs_review:0,lines:[tracked,external]};`,context);
-  return runInContext(script,context);
+const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+const initialization = app.indexOf("$('#movement-form').addEventListener");
+if (initialization < 0) throw new Error('The simple UI initialization boundary changed; update this harness.');
+const definitions = app.slice(0, initialization);
+
+function evaluate(script: string) {
+  const context = createContext({ Intl, document: {}, localStorage: { getItem: () => null }, setTimeout, clearTimeout, AbortController });
+  runInContext(definitions, context);
+  runInContext(`
+    const item={id:'tracked',inventory_mode:'STOCK_LIMITED',active:1,available:8};
+    const appLine={id:'app-line',item_id:'tracked',management_mode:'APP',ordered_qty:3,picked_qty:0,pickable_qty:3};
+    const workbookLine={id:'workbook-line',item_id:'tracked',management_mode:'WORKBOOK',ordered_qty:9,picked_qty:0,pickable_qty:9};
+    const paid={id:'100',payment_status:'PAID',fulfillment_status:'PROCESSING',needs_review:0,lines:[appLine,workbookLine]};
+  `, context);
+  return runInContext(script, context);
 }
-describe('workbook-managed mixed order UI',()=>{
-  it('does not let workbook quantities enter app pick progress or eligibility',()=>{
-    expect(evaluate('canPick(mixed)')).toBe(true);
-    expect(evaluate('appOrderRemaining(mixed)')).toBe(2);
-    expect(evaluate('orderRemaining(mixed)')).toBe(5);
-    expect(evaluate('pickableQuantity(external)')).toBe(0);
-    expect(evaluate('canPick({...mixed,lines:[external]})')).toBe(false);
-    expect(evaluate('canPick({...mixed,lines:[{...tracked,picked_qty:2},external]})')).toBe(false);
+
+describe('simple worker UI pilot scope', () => {
+  it('never allows a workbook-managed order line to become pickable', () => {
+    expect(evaluate('pickableQuantity(workbookLine)')).toBe(0);
+    expect(evaluate('pickableQuantity(appLine)')).toBe(3);
   });
-  it('continues to honor Paid and review restrictions',()=>{
-    expect(evaluate("canPick({...mixed,payment_status:'AWAITING_PAYMENT'})")).toBe(false);
-    expect(evaluate('canPick({...mixed,needs_review:1})')).toBe(false);
+
+  it.each([
+    ['AWAITING_PAYMENT', 'PROCESSING', 0],
+    ['PAID', 'READY_FOR_PICKUP', 0],
+    ['PAID', 'SHIPPED', 0],
+    ['PAID', 'PROCESSING', 1],
+  ])('does not offer an ineligible order (%s / %s / review %s)', (payment, fulfillment, needsReview) => {
+    expect(evaluate(`canPickOrder({...paid,payment_status:${JSON.stringify(payment)},fulfillment_status:${JSON.stringify(fulfillment)},needs_review:${needsReview}})`)).toBe(false);
   });
-  it('explains workbook handling and never represents app progress as whole-order completion',()=>{
-    expect(app).toContain('Workbook-managed · handle outside this app');
-    expect(app).toContain('App progress does not confirm that the whole order is complete.');
-    expect(app).toContain('Workbook-managed lines still need an outside check; this app cannot confirm whole-order completion.');
+
+  it('accepts only paid processing orders before resolving an exact item line', () => {
+    expect(evaluate('canPickOrder(paid)')).toBe(true);
+  });
+
+  it('requires the fetched item to be active and its opening count to be known', () => {
+    expect(evaluate('operationalItem(item)')).toBe(true);
+    expect(evaluate("operationalItem({...item,active:0})")).toBe(false);
+    expect(evaluate("operationalItem({...item,inventory_mode:'SUPPLIER_BACKED_UNLIMITED',opening_verified:0})")).toBe(false);
   });
 });

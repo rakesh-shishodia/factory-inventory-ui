@@ -7,7 +7,8 @@ import { previewImport } from '../src/opening-import';
 import * as sync from '../src/sync';
 import { sqliteD1, applyMigrations } from './d1';
 
-vi.mock('../src/sync', () => ({
+vi.mock('../src/sync', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/sync')>(),
   enqueueSync: vi.fn().mockResolvedValue(true),
   ingestWebhook: vi.fn().mockResolvedValue(Response.json({ received: true }, { status: 202 })),
   pollOrders: vi.fn().mockResolvedValue({ processed: 0, complete: true }),
@@ -22,6 +23,11 @@ let ctx: ExecutionContext;
 let background: Promise<unknown>[];
 const origin = 'http://127.0.0.1:8787';
 const timestamp = '2026-09-22T08:00:00.000Z';
+
+function ecwidProduct(quantity = 6, changes: Record<string, unknown> = {}) {
+  return { id: 1001, sku: 'NUT', name: 'Nut', quantity, unlimited: false, enabled: true,
+    options: [], combinations: [], defaultCombinationId: 0, compositeParents: [], compositeComponents: [], ...changes };
+}
 
 function request(path: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}) {
   return new Request(`${origin}${path}`, { method,
@@ -153,6 +159,23 @@ describe('picker HTTP contract', () => {
     expect(sync.enqueueSync).toHaveBeenCalledWith(env, { kind: 'outbox', id });
     expect(background).toHaveLength(1);
   });
+
+  it('requires an administrator for adjustments but permits the exact saved retry', async () => {
+    const input = { operation_id: crypto.randomUUID(), type: 'RESTOCK', reason_code: 'ADJUST_UP',
+      item_id: 'item-1', quantity: 1, note: 'Adjustment up: Cycle count' };
+    const first = await worker.fetch(request('/api/movements', 'POST', input), env, ctx);
+    expect(first.status).toBe(201);
+    vi.spyOn(auth, 'authenticate').mockResolvedValue({ actor: 'demo@local', role: 'picker' });
+    const replay = await worker.fetch(request('/api/movements', 'POST', input), env, ctx);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ duplicate: true, movement: { reason_code: 'ADJUST_UP' } });
+    sqlite.prepare("UPDATE outbox SET status='APPLIED'").run();
+    const rejected = await worker.fetch(request('/api/movements', 'POST', {
+      ...input, operation_id: crypto.randomUUID(), quantity: 2,
+    }), env, ctx);
+    expect(rejected.status).toBe(403);
+    expect(await rejected.json()).toMatchObject({ code: 'ADMIN_REQUIRED' });
+  });
 });
 
 describe('configuration, origin, and routing boundaries', () => {
@@ -199,6 +222,12 @@ describe('configuration, origin, and routing boundaries', () => {
     const response = await worker.fetch(request('/api/health'), env, ctx);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true });
+  });
+
+  it('uses scheduled work only to recover committed stock sync, not to scan orders', async () => {
+    await worker.scheduled({} as ScheduledController, env);
+    expect(sync.pumpSync).toHaveBeenCalledWith(env);
+    expect(sync.pollOrders).not.toHaveBeenCalled();
   });
 
   it.each(['/api/does-not-exist', '/api/items/does-not-exist', '/api'])('returns JSON 404 for unknown API route %s', async path => {
@@ -327,6 +356,58 @@ describe('legacy QR compatibility', () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ code: 'VARIATION_QR_MISMATCH' });
   });
+
+  it('returns a fresh exact Ecwid quantity with the shelf record in live mode', async () => {
+    authorizeLive();
+    env.ECWID_STORE_ID = '123'; env.ECWID_TOKEN = 'test-token';
+    vi.mocked(fetch).mockResolvedValue(Response.json(ecwidProduct(6)));
+    const response = await worker.fetch(request('/api/items/lookup?code=NUT'), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ item: { sku: 'NUT', on_hand: 10, location: 'Shelf A' },
+      ecwid_stock: { quantity: 6, unlimited: false } });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks current Ecwid stock before a live offline deduction', async () => {
+    authorizeLive();
+    env.ECWID_STORE_ID = '123'; env.ECWID_TOKEN = 'test-token';
+    env.LIVE_SYNC_ENABLED = 'true';
+    vi.mocked(fetch).mockResolvedValue(Response.json(ecwidProduct(1)));
+    const response = await worker.fetch(request('/api/movements', 'POST', {
+      operation_id: crypto.randomUUID(), type: 'EMAIL_SALE', item_id: 'item-1', quantity: 2,
+    }), env, ctx);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'INSUFFICIENT_ECWID_STOCK' });
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM movements').get()).toEqual({ count: 0 });
+    expect(sync.enqueueSync).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['changed SKU', { sku: 'OTHER' }],
+    ['disabled product', { enabled: false }],
+    ['unlimited policy', { unlimited: true, quantity: null }],
+    ['bundle relationship', { compositeComponents: [{ id: 99 }] }],
+    ['extra product option', { options: [{ name: 'Finish', type: 'SELECT', choices: [{ text: 'Black' }] }] }],
+  ])('blocks a live lookup when the approved mapping has a %s', async (_label, changes) => {
+    authorizeLive();
+    env.ECWID_STORE_ID = '123'; env.ECWID_TOKEN = 'test-token';
+    vi.mocked(fetch).mockResolvedValue(Response.json(ecwidProduct(6, changes)));
+    const response = await worker.fetch(request('/api/items/lookup?code=NUT'), env, ctx);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'ECWID_MAPPING_CHANGED' });
+  });
+
+  it('validates the approved Ecwid identity before accepting a live restock', async () => {
+    authorizeLive();
+    env.ECWID_STORE_ID = '123'; env.ECWID_TOKEN = 'test-token'; env.LIVE_SYNC_ENABLED = 'true';
+    vi.mocked(fetch).mockResolvedValue(Response.json(ecwidProduct(6, { sku: 'OTHER' })));
+    const response = await worker.fetch(request('/api/movements', 'POST', {
+      operation_id: crypto.randomUUID(), type: 'RESTOCK', item_id: 'item-1', quantity: 2,
+    }), env, ctx);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'ECWID_MAPPING_CHANGED' });
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM movements').get()).toEqual({ count: 0 });
+  });
 });
 
 describe('independent variation lookup', () => {
@@ -350,5 +431,20 @@ describe('independent variation lookup', () => {
     expect(await response.json()).toMatchObject({ code: 'VARIATION_QR_MISMATCH' });
     expect(sqlite.prepare("SELECT on_hand FROM items WHERE id IN ('v-small','v-large') ORDER BY id").all())
       .toEqual([{ on_hand: 50 }, { on_hand: 30 }]);
+  });
+
+  it('blocks a live variation lookup when its approved option identity changed', async () => {
+    authorizeLive();
+    env.ECWID_STORE_ID = '123'; env.ECWID_TOKEN = 'test-token';
+    vi.mocked(fetch).mockResolvedValue(Response.json({
+      id: 2001, sku: 'PARENT', name: 'Nut', quantity: 0, unlimited: true, enabled: true,
+      options: [{ name: 'Size', type: 'SELECT', choices: [{ text: 'M4' }] }], defaultCombinationId: 3001,
+      compositeParents: [], compositeComponents: [],
+      combinations: [{ id: 3001, sku: 'NUT-M3', quantity: 30, unlimited: false,
+        options: [{ name: 'Size', value: 'M4' }], compositeParents: [], compositeComponents: [] }],
+    }));
+    const response = await worker.fetch(request('/api/items/lookup?code=NUT-M3'), env, ctx);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'ECWID_MAPPING_CHANGED' });
   });
 });

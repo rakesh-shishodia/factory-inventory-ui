@@ -84,9 +84,14 @@ describe('independent integration regressions', () => {
   });
 
   it('delivers another item when the oldest 25 pending rows are blocked', async () => {
-    for (let i = 0; i < 25; i++) await outgoing();
-    sqlite.prepare(`INSERT INTO sync_issues(id,item_id,kind,message,created_at)
-      VALUES('review','item-1','REVIEW','Count needed',?)`).run(trackingStart);
+    for (let i = 0; i < 25; i++) {
+      const item = `blocked-${i}`;
+      sqlite.prepare(`INSERT INTO items(id,sku,name,scan_code,ecwid_product_id,on_hand,last_ecwid_quantity)
+        VALUES(?,?,?,?,?,100,100)`).run(item, `BLOCKED-${i}`, `Blocked ${i}`, `BIN-${i}`, String(2000 + i));
+      await outgoing(item);
+      sqlite.prepare(`INSERT INTO sync_issues(id,item_id,kind,message,created_at)
+        VALUES(?,?, 'REVIEW','Count needed',?)`).run(`review-${i}`, item, trackingStart);
+    }
     const deliverable = await outgoing('item-2');
     await pumpSync(env);
     expect(env.SYNC_QUEUE.send).toHaveBeenCalledWith({ kind: 'outbox', id: deliverable });

@@ -118,13 +118,37 @@ describe('physical inventory and order reservations', () => {
 
   it('records restocks and outgoing movements with signed Ecwid deltas', async () => {
     await createMovement(db, movement('RESTOCK', 5), actor);
+    sqlite.prepare("UPDATE outbox SET status='APPLIED'").run();
     await createMovement(db, movement('EMAIL_SALE', 2), actor);
+    sqlite.prepare("UPDATE outbox SET status='APPLIED'").run();
     await createMovement(db, movement('INTERNAL_USE', 1), actor);
     expect(await getItem(db, 'item-1')).toMatchObject({ on_hand: 12, available: 12 });
     expect(sqlite.prepare('SELECT quantity_delta FROM outbox ORDER BY rowid').all()).toEqual([
       { quantity_delta: 5 }, { quantity_delta: -2 }, { quantity_delta: -1 },
     ]);
-    expect(await dashboard(db)).toMatchObject({ physical_units: 12, pending_sync: 3, attention_count: 0 });
+    expect(await dashboard(db)).toMatchObject({ physical_units: 12, pending_sync: 1, attention_count: 0 });
+  });
+
+  it('waits for the previous Ecwid delta before accepting another for the same item', async () => {
+    const first = movement('EMAIL_SALE', 1);
+    await createMovement(db, first, actor);
+    await expect(createMovement(db, movement('INTERNAL_USE', 1), actor))
+      .rejects.toMatchObject({ code: 'STOCK_SYNC_PENDING', status: 409 });
+    expect(await createMovement(db, first, actor)).toMatchObject({ duplicate: true, sync_status: 'PENDING' });
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM movements').get()).toEqual({ count: 1 });
+    sqlite.prepare("UPDATE outbox SET status='APPLIED'").run();
+    await expect(createMovement(db, movement('RESTOCK', 1), actor)).resolves.toMatchObject({ duplicate: false });
+  });
+
+  it('stores adjustment reasons explicitly and requires a note and matching direction', async () => {
+    const up = { ...movement('RESTOCK', 2), reason_code: 'ADJUST_UP' as const, note: 'Adjustment up: Cycle count' };
+    const result = await createMovement(db, up, actor);
+    expect(result.movement).toMatchObject({ type: 'RESTOCK', reason_code: 'ADJUST_UP', quantity_delta: 2 });
+    sqlite.prepare("UPDATE outbox SET status='APPLIED'").run();
+    await expect(createMovement(db, { ...movement('INTERNAL_USE', 1), reason_code: 'ADJUST_DOWN', note: '' }, actor))
+      .rejects.toMatchObject({ code: 'ADJUSTMENT_NOTE_REQUIRED', status: 400 });
+    await expect(createMovement(db, { ...movement('RESTOCK', 1), reason_code: 'ADJUST_DOWN', note: 'Wrong way' }, actor))
+      .rejects.toMatchObject({ code: 'INVALID_ADJUSTMENT_DIRECTION', status: 400 });
   });
 
   it('never lets two requests spend the same physical units', async () => {

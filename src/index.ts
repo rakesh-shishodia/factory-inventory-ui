@@ -5,9 +5,10 @@ import { json, objectBody, readJson, requireSameOrigin } from './http';
 import { previewImport } from './opening-import';
 import { stageOpeningImport } from './opening-apply';
 import { previewOpeningCutover, stageOpeningCutover } from './opening-cutover';
-import { EcwidError } from './ecwid';
+import { EcwidClient, EcwidError } from './ecwid';
 import { createAllocation, listAllocations, validateAllocationInput } from './supplier';
-import { enqueueSync, ingestWebhook, pollOrders, processSyncMessage, pumpSync, refreshOrder, type SyncMessage } from './sync';
+import { enqueueSync, ingestWebhook, pollOrders, processSyncMessage, pumpSync, refreshOrder,
+  targetMatchesMapping, type SyncMessage } from './sync';
 
 function itemCode(raw: string): { sku: string; combinationId: string | null } {
   const parts = raw.trim().split('|');
@@ -16,6 +17,22 @@ function itemCode(raw: string): { sku: string; combinationId: string | null } {
   }
   if (!parts[0]?.trim() || parts[0].length > 200) throw new DomainError(400, 'INVALID_CODE', 'Enter or scan an item SKU.');
   return { sku: parts[0].trim(), combinationId: parts[1]?.trim() || null };
+}
+
+async function currentEcwidStock(env: Env, item: Awaited<ReturnType<typeof getItem>>) {
+  if (env.ECWID_MODE !== 'live') {
+    return { quantity: item.last_ecwid_quantity, unlimited: false, checked_at: null };
+  }
+  if (!item.ecwid_product_id) {
+    throw new DomainError(409, 'ECWID_MAPPING_REQUIRED', 'This item is not mapped to an Ecwid stock record.');
+  }
+  const target = await new EcwidClient({ storeId: env.ECWID_STORE_ID, token: env.ECWID_TOKEN })
+    .getProductStock(item.ecwid_product_id, item.ecwid_combination_id);
+  if (!targetMatchesMapping(target, item)) {
+    throw new DomainError(409, 'ECWID_MAPPING_CHANGED',
+      'This Ecwid item no longer matches its approved stock mapping. Ask an administrator to review it.');
+  }
+  return { quantity: target.quantity, unlimited: target.unlimited, checked_at: new Date().toISOString() };
 }
 
 async function routes(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -39,7 +56,7 @@ async function routes(request: Request, env: Env, ctx: ExecutionContext): Promis
     if (code.combinationId && item.ecwid_combination_id !== code.combinationId) {
       throw new DomainError(409, 'VARIATION_QR_MISMATCH', 'The QR variation ID does not match this SKU. Check the box label before moving stock.');
     }
-    return json({ item });
+    return json({ item, ecwid_stock: await currentEcwidStock(env, item) });
   }
   if (path === '/api/items' && request.method === 'GET') return json({ items: await listItems(env.DB, url.searchParams.get('search') ?? '') });
   if (path === '/api/orders' && request.method === 'GET') {
@@ -79,10 +96,20 @@ async function routes(request: Request, env: Env, ctx: ExecutionContext): Promis
     // lost response could incorrectly look like an unsuccessful stock movement.
     const existing = await env.DB.prepare('SELECT id FROM movements WHERE id=?').bind(input.operation_id).first();
     if (!existing) {
+      if (input.reason_code) requireAdmin(identity);
       if (env.ECWID_MODE === 'live' && env.INVENTORY_ENABLED !== 'true') {
         throw new DomainError(409, 'CUTOVER_REQUIRED', 'Opening stock alignment must be completed before recording live movements.');
       }
       if (input.type === 'ECWID_PICK' && env.ECWID_MODE === 'live') await refreshOrder(env, input.order_id!);
+      if (env.ECWID_MODE === 'live' && ['EMAIL_SALE', 'INTERNAL_USE', 'RESTOCK'].includes(input.type)) {
+        const item = await getItem(env.DB, input.item_id);
+        if (item.inventory_mode === 'STOCK_LIMITED') {
+          const stock = await currentEcwidStock(env, item);
+          if (input.type !== 'RESTOCK' && input.quantity > (stock.quantity ?? -1)) {
+            throw new DomainError(409, 'INSUFFICIENT_ECWID_STOCK', 'That quantity exceeds the stock currently available in Ecwid. Check pending online orders.');
+          }
+        }
+      }
     }
     const result = await createMovement(env.DB, input, identity.actor);
     if (result.sync_status === 'PENDING') ctx.waitUntil(enqueueSync(env, { kind: 'outbox', id: result.movement.id }));
@@ -168,10 +195,12 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    // A polling failure must not prevent persisted stock work from being queued.
-    const result = await Promise.allSettled([pollOrders(env), pumpSync(env)]);
-    for (const task of result) if (task.status === 'rejected') {
-      console.error(JSON.stringify({ event: 'scheduled_sync_failed', message: task.reason instanceof Error ? task.reason.message : 'Unknown error' }));
+    // The reduced pilot refreshes only a worker-entered order ID. The schedule
+    // is a recovery net for committed stock outbox work, never an order scan.
+    try { await pumpSync(env); }
+    catch (error) {
+      console.error(JSON.stringify({ event: 'scheduled_sync_failed',
+        message: error instanceof Error ? error.message : 'Unknown error' }));
     }
   }
 } satisfies ExportedHandler<Env, SyncMessage>;

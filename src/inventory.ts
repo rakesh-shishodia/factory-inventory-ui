@@ -101,6 +101,7 @@ const guardErrors: Record<string, string> = {
   IDEMPOTENCY_CONFLICT: 'This operation ID was already used for a different action.',
   ITEM_UNAVAILABLE: 'This item is inactive or no longer available.',
   ITEM_NEEDS_REVIEW: 'This item has a stock sync issue that needs review before another movement.',
+  STOCK_SYNC_PENDING: 'The previous stock change for this item is still syncing to Ecwid. Wait a moment, then fetch the item again.',
   ECWID_MAPPING_REQUIRED: 'This item needs a verified Ecwid product mapping.',
   ORDER_NOT_PICKABLE: 'Only paid, eligible orders without review flags can be picked. Check the selected item and order line.',
   PICK_QUANTITY_EXCEEDED: 'That quantity exceeds the quantity left to pick on this order line.',
@@ -123,13 +124,14 @@ export async function createMovement(db: D1Database, value: unknown, actor: stri
   // Existing UUIDs never enter the trigger. The database batch also gives the
   // caller a consistent result when two submissions arrive simultaneously.
   const insert = db.prepare(`INSERT INTO movements
-    (id, fingerprint, type, item_id, quantity, quantity_delta, ecwid_quantity_delta, order_id, order_line_id, note, actor, created_at,inventory_mode)
+    (id, fingerprint, type, item_id, quantity, quantity_delta, ecwid_quantity_delta, order_id, order_line_id, note, reason_code, actor, created_at,inventory_mode)
     SELECT ?, ?, ?, ?, ?, ?, CASE WHEN ?='ECWID_PICK' OR
       (SELECT inventory_mode FROM items WHERE id=?)='SUPPLIER_BACKED_UNLIMITED' THEN 0 ELSE ? END,
-      ?, ?, ?, ?, ?, COALESCE((SELECT inventory_mode FROM items WHERE id=?),'STOCK_LIMITED')
+      ?, ?, ?, ?, ?, ?, COALESCE((SELECT inventory_mode FROM items WHERE id=?),'STOCK_LIMITED')
     WHERE NOT EXISTS (SELECT 1 FROM movements WHERE id = ?)`)
     .bind(input.operation_id, fingerprint, input.type, input.item_id, input.quantity, quantityDelta, input.type,input.item_id,quantityDelta,
-      input.order_id ?? null, input.order_line_id ?? null, input.note ?? '', normalizedActor, now, input.item_id,input.operation_id);
+      input.order_id ?? null, input.order_line_id ?? null, input.note ?? '', input.reason_code ?? '', normalizedActor, now,
+      input.item_id,input.operation_id);
   let result: D1Result<Movement>[];
   try {
     result = await db.batch<Movement>([insert, db.prepare(`${movementSelect} WHERE m.id = ?`).bind(input.operation_id)]);

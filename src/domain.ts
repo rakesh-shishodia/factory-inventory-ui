@@ -1,4 +1,5 @@
 export type MovementType = 'ECWID_PICK' | 'EMAIL_SALE' | 'INTERNAL_USE' | 'RESTOCK';
+export type MovementReasonCode = '' | 'ADJUST_UP' | 'ADJUST_DOWN';
 export type SyncStatus = 'NOT_REQUIRED' | 'PENDING' | 'PROCESSING' | 'APPLIED' | 'UNKNOWN' | 'BLOCKED';
 export type InventoryMode = 'STOCK_LIMITED' | 'SUPPLIER_BACKED_UNLIMITED';
 export type LineManagementMode = 'APP' | 'WORKBOOK';
@@ -27,6 +28,7 @@ export interface MovementInput {
   order_id?: string;
   order_line_id?: string;
   note?: string;
+  reason_code?: MovementReasonCode;
 }
 
 export interface Item {
@@ -102,6 +104,7 @@ export interface Movement {
   order_id: string | null;
   order_line_id: string | null;
   note: string;
+  reason_code: MovementReasonCode;
   actor: string;
   created_at: string;
   sync_status: SyncStatus;
@@ -132,6 +135,16 @@ export function validateMovementInput(value: unknown): MovementInput {
   if (input.note !== undefined && (typeof input.note !== 'string' || input.note.length > 1000)) {
     throw new DomainError(400, 'INVALID_NOTE', 'The note must contain at most 1,000 characters.');
   }
+  const reasonCode = input.reason_code === undefined ? '' : String(input.reason_code);
+  if (!['', 'ADJUST_UP', 'ADJUST_DOWN'].includes(reasonCode)) {
+    throw new DomainError(400, 'INVALID_REASON_CODE', 'Choose a supported stock adjustment reason.');
+  }
+  if ((reasonCode === 'ADJUST_UP' && input.type !== 'RESTOCK')
+    || (reasonCode === 'ADJUST_DOWN' && input.type !== 'INTERNAL_USE')) {
+    throw new DomainError(400, 'INVALID_ADJUSTMENT_DIRECTION', 'The stock adjustment direction does not match the movement.');
+  }
+  const note = ((input.note as string | undefined) ?? '').trim();
+  if (reasonCode && !note) throw new DomainError(400, 'ADJUSTMENT_NOTE_REQUIRED', 'Enter a note explaining this adjustment.');
   if (input.type === 'ECWID_PICK') {
     for (const key of ['order_id', 'order_line_id']) {
       if (typeof input[key] !== 'string' || !(input[key] as string).trim() || (input[key] as string).length > 200) {
@@ -147,12 +160,14 @@ export function validateMovementInput(value: unknown): MovementInput {
     item_id: input.item_id.trim(),
     quantity: input.quantity,
     ...(input.type === 'ECWID_PICK' ? { order_id: (input.order_id as string).trim(), order_line_id: (input.order_line_id as string).trim() } : {}),
-    note: ((input.note as string | undefined) ?? '').trim(),
+    note,
+    reason_code: reasonCode as MovementReasonCode,
   };
 }
 
 export async function movementFingerprint(input: MovementInput, actor: string): Promise<string> {
-  const payload = JSON.stringify([input.type, input.item_id, input.quantity, input.order_id ?? null, input.order_line_id ?? null, input.note ?? '', actor]);
+  const payload = JSON.stringify([input.type, input.reason_code ?? '', input.item_id, input.quantity,
+    input.order_id ?? null, input.order_line_id ?? null, input.note ?? '', actor]);
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload));
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }

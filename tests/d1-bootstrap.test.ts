@@ -19,8 +19,8 @@ const schema=(db:Database.Database)=>db.prepare(`SELECT type,name,tbl_name,sql F
   WHERE name NOT GLOB 'sqlite_*' AND name NOT IN ('d1_migrations','_cf_KV') ORDER BY type,name`).all();
 
 describe('empty-only D1 bootstrap artifact',()=>{
-  it('preserves all eight migrations byte-for-byte with deterministic names and the normal Wrangler journal',async()=>{
-    const input=await sources();expect(input).toHaveLength(8);
+  it('preserves all nine migrations byte-for-byte with deterministic names and the normal Wrangler journal',async()=>{
+    const input=await sources();expect(input).toHaveLength(9);
     const first=buildD1Bootstrap(input);const second=buildD1Bootstrap([...input].reverse());
     expect(first.sql.equals(second.sql)).toBe(true);expect(first.sha256).toBe(second.sha256);
     let offset=0;
@@ -34,7 +34,7 @@ describe('empty-only D1 bootstrap artifact',()=>{
       expect(schema(db)).toEqual(schema(expected));expect(db.pragma('foreign_key_check')).toEqual([]);
       const journal=db.prepare('SELECT id,name,applied_at FROM d1_migrations ORDER BY id').all() as {id:number;name:string;applied_at:string}[];
       expect(journal.map(row=>row.name)).toEqual(first.migrations.map(row=>row.name));
-      expect(journal.map(row=>row.id)).toEqual([1,2,3,4,5,6,7,8]);expect(journal.every(row=>Number.isFinite(Date.parse(row.applied_at)))).toBe(true);
+      expect(journal.map(row=>row.id)).toEqual([1,2,3,4,5,6,7,8,9]);expect(journal.every(row=>Number.isFinite(Date.parse(row.applied_at)))).toBe(true);
       expect(() => db.exec("INSERT INTO items(id,sku,name,scan_code,inventory_mode,active) VALUES('s','SUP','Supplier','SUP','SUPPLIER_BACKED_UNLIMITED',1)")).toThrow('SUPPLIER_OPENING_REQUIRED');
       db.exec("INSERT INTO items(id,sku,name,scan_code,ecwid_product_id) VALUES('a','APP','App','APP','100')");
       expect(()=>db.exec(`INSERT INTO workbook_managed_targets(id,sku,name,ecwid_product_id,ecwid_option_signature,review_reference,reviewed_by,reviewed_at)
@@ -46,7 +46,7 @@ describe('empty-only D1 bootstrap artifact',()=>{
     try {
       db.exec(`${MIGRATIONS_TABLE_SQL} CREATE TABLE _cf_KV(key TEXT PRIMARY KEY,value BLOB) WITHOUT ROWID;`);
       execute(db,buildD1Bootstrap(await sources()).sql);
-      expect(db.prepare('SELECT COUNT(*) AS n FROM d1_migrations').get()).toEqual({n:8});
+      expect(db.prepare('SELECT COUNT(*) AS n FROM d1_migrations').get()).toEqual({n:9});
       expect(db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='_cf_KV'").get()).toEqual({n:1});
     } finally {db.close();}
   });

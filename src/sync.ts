@@ -12,7 +12,7 @@ export type SyncEnv = Pick<Env, 'DB' | 'SYNC_QUEUE' | 'ECWID_MODE' | 'LIVE_SYNC_
 };
 
 interface OutboxRow { id: string; item_id: string; ecwid_product_id: string; ecwid_combination_id: string | null; quantity_delta: number; status: string }
-interface ProductMapping { id: string; sku: string; ecwid_combination_id: string | null; ecwid_option_signature: string; inventory_mode: InventoryMode }
+export interface ProductMapping { id: string; sku: string; ecwid_combination_id: string | null; ecwid_option_signature: string; inventory_mode: InventoryMode }
 interface InboxRow { event_id: string; event_type: string; entity_id: string; payload: string }
 const now = () => new Date().toISOString();
 
@@ -273,7 +273,7 @@ async function markOrderDeleted(db: D1Database, id: string): Promise<void> {
   ]);
 }
 
-function targetMatchesMapping(target: EcwidProduct, item: ProductMapping): boolean {
+export function targetMatchesMapping(target: EcwidProduct, item: ProductMapping): boolean {
   const options = canonicalVariationOptions(target.variationOptions);
   const stockPolicyMatches = item.inventory_mode === 'SUPPLIER_BACKED_UNLIMITED'
     ? target.unlimited : !target.unlimited && target.quantity !== null && target.quantity >= 0;

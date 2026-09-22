@@ -127,15 +127,14 @@ describe('durable outbound delivery', () => {
 
   it('blocks newer item adjustments after an ambiguous write', async () => {
     const first = await outgoing(1);
-    const second = await outgoing(2);
     sqlite.prepare('UPDATE outbox SET created_at=? WHERE id=?').run('2026-09-22T00:00:00.000Z', first);
     const fetcher = vi.fn().mockRejectedValue(new Error('connection lost after send'));
     await processOutbox(env, first, fetcher);
     await processOutbox(env, first, fetcher);
-    await processOutbox(env, second, fetcher);
+    await expect(outgoing(2)).rejects.toMatchObject({ code: 'ITEM_NEEDS_REVIEW', status: 409 });
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(sqlite.prepare('SELECT status FROM outbox WHERE id=?').get(first)).toEqual({ status: 'UNKNOWN' });
-    expect(sqlite.prepare('SELECT status,attempts FROM outbox WHERE id=?').get(second)).toEqual({ status: 'PENDING', attempts: 0 });
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM outbox').get()).toEqual({ count: 1 });
     expect(sqlite.prepare("SELECT count(*) AS count FROM sync_issues WHERE status='OPEN'").get()).toEqual({ count: 1 });
   });
 

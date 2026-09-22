@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#102d32">
-  <meta name="description" content="Factory stock, order picking, and inventory movements for 3DPrintronics.">
+  <meta name="theme-color" content="#174f43">
+  <meta name="description" content="Scan an item and record a factory stock movement.">
   <title>Factory Inventory · 3DPrintronics</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/vendor/html5-qrcode.min.js" defer></script>
@@ -12,95 +12,128 @@
 </head>
 <body>
   <svg class="icon-definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-    <symbol id="i-box" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z M3 8v9l9 5 9-5V8 M12 13v9 M7.5 5.5l9 5"/></symbol>
-    <symbol id="i-pick" viewBox="0 0 24 24"><path d="M8 4H5a2 2 0 0 0-2 2v14h18V6a2 2 0 0 0-2-2h-3 M8 2h8v5H8z M8 13l3 3 5-6"/></symbol>
-    <symbol id="i-arrows" viewBox="0 0 24 24"><path d="M4 7h15m-4-4 4 4-4 4 M20 17H5m4-4-4 4 4 4"/></symbol>
-    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
-    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
-    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z M3 8v9l9 5 9-5V8 M12 13v9"/></symbol>
     <symbol id="i-scan" viewBox="0 0 24 24"><path d="M8 3H3v5 M16 3h5v5 M3 16v5h5 M21 16v5h-5 M7 7h3v3H7z M14 7h3v3h-3z M7 14h3v3H7z M14 14h3v3h-3z"/></symbol>
-    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5 M4 17v-5h5 M5 7a8 8 0 0 1 13-2l2 3 M4 16l2 3a8 8 0 0 0 13-2"/></symbol>
-    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
-    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
-    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-camera-switch" viewBox="0 0 24 24"><path d="M8 6h2l1.2-2h4.6L17 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3Z M8.5 13a4 4 0 0 0 6.8 2.8 M15.5 11a4 4 0 0 0-6.8-2.8 M8.5 8v3h3 M15.5 16v-3h-3"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12 M18 6 6 18"/></symbol>
-    <symbol id="i-alert" viewBox="0 0 24 24"><path d="m12 3 10 18H2L12 3Z M12 9v5 M12 17v.1"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14 M5 12h14"/></symbol>
-    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5 M4 17v-5h5 M5 7a8 8 0 0 1 13-2l2 3 M4 16l2 3a8 8 0 0 0 13-2"/></symbol>
   </svg>
 
-  <aside class="sidebar">
-    <a class="brand" href="#pick" aria-label="3DPrintronics Factory Inventory home">
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="3DPrintronics Factory Inventory">
       <span class="brand-mark"><svg class="icon"><use href="#i-box"/></svg></span>
       <span><strong>3DPrintronics</strong><small>FACTORY INVENTORY</small></span>
     </a>
-    <div class="workspace-label">WORKSPACE</div>
-    <nav class="navigation" aria-label="Main navigation">
-      <a href="#pick" data-view="pick" class="nav-link active"><svg class="icon"><use href="#i-pick"/></svg><span>Pick orders</span><span id="nav-pick-count" class="nav-count">—</span></a>
-      <a href="#movement" data-view="movement" class="nav-link"><svg class="icon"><use href="#i-arrows"/></svg><span>Stock movement</span></a>
-      <a href="#inventory" data-view="inventory" class="nav-link"><svg class="icon"><use href="#i-grid"/></svg><span>Inventory</span></a>
-      <a href="#activity" data-view="activity" class="nav-link"><svg class="icon"><use href="#i-activity"/></svg><span>Activity & sync</span><span id="nav-issue-count" class="nav-count warning" hidden>0</span></a>
-    </nav>
-    <div class="sidebar-bottom">
-      <div class="connection"><span id="connection-dot" class="status-dot"></span><span id="connection-label">Connecting to inventory</span></div>
-      <p>Every item. Every movement.<br>A clear record of your stock.</p>
-      <div class="account"><div class="avatar" id="actor-initials">—</div><div><strong id="actor-name">Loading workspace</strong><small id="actor-role">Inventory team</small></div></div>
+    <span id="connection-status" class="connection-status"><span class="status-dot"></span><span>Connecting</span></span>
+  </header>
+
+  <main class="worker-shell">
+    <div class="intro">
+      <p class="eyebrow">STOCK MOVEMENT</p>
+      <h1>Scan. Check. Submit.</h1>
+      <p>Record one item at a time.</p>
     </div>
-  </aside>
 
-  <div class="app-shell">
-    <header class="topbar">
-      <div class="breadcrumb"><span class="desktop-label">Workspace</span><span class="breadcrumb-separator">/</span><strong id="breadcrumb-current">Pick orders</strong></div>
-      <div class="topbar-end"><button id="quick-sync-status" class="quick-sync-status" type="button" title="Refresh sync status without changing your current form" aria-label="Refresh sync status"><svg class="icon"><use href="#i-activity"/></svg><span>Checking sync</span></button><span class="mode-pill" id="mode-pill"><span class="status-dot"></span>Connecting</span><span class="topbar-date" id="today"></span></div>
-    </header>
+    <div id="global-error" class="banner banner-danger" role="alert" hidden></div>
+    <div id="paused-banner" class="banner banner-warning" role="alert" hidden>
+      Stock recording is paused. Please ask an administrator before moving stock.
+    </div>
+    <div id="pending-banner" class="banner banner-warning pending-banner" role="alert" hidden>
+      <div><strong>Confirm the previous submission</strong><p id="pending-description"></p></div>
+      <button id="retry-pending" class="button button-secondary" type="button"><svg class="icon"><use href="#i-refresh"/></svg>Retry safely</button>
+    </div>
 
-    <main id="main-content">
-      <div class="page-heading"><div><p class="eyebrow">FACTORY OPERATIONS</p><h1 id="page-title">Pick orders.</h1><p class="page-description" id="page-description">Loading your workspace status.</p></div><button id="refresh-all" class="button button-outline" aria-label="Refresh"><svg class="icon"><use href="#i-refresh"/></svg><span>Refresh</span></button></div>
+    <form id="movement-form" class="movement-card" novalidate>
+      <button id="open-scanner" class="button scanner-button" type="button">
+        <svg class="icon"><use href="#i-scan"/></svg>
+        <span>Open Scanner</span>
+        <small>Uses the back camera</small>
+      </button>
 
-      <div id="global-error" class="banner banner-danger" role="alert" hidden></div>
-      <div id="inventory-paused-banner" class="banner banner-warning" hidden><strong>Opening stock alignment is required</strong><p>You can review inventory and orders. Stock recording will become available after the opening balances are verified.</p></div>
-      <div id="demo-banner" class="demo-banner" hidden><span class="demo-icon"><svg class="icon"><use href="#i-box"/></svg></span><div><strong>Your local demo workspace</strong><span>Try the complete picking flow with sample stock. No live Ecwid inventory is changed.</span></div><span class="subtle-tag">DEMO DATA</span></div>
-      <div id="pending-banner" class="banner banner-warning pending-banner" role="alert" hidden><div><strong>A submission needs confirmation</strong><p>The response did not reach this device. Retry the same submission safely before recording another movement or assignment.</p><small id="pending-description"></small></div><button id="retry-pending" class="button button-dark"><svg class="icon"><use href="#i-refresh"/></svg>Retry submission</button></div>
+      <div class="divider"><span>OR ENTER SKU</span></div>
 
-      <section class="stats-grid" aria-label="Inventory overview">
-        <article class="stat-card"><div class="stat-label"><span>Physical stock</span><svg class="icon"><use href="#i-box"/></svg></div><div class="stat-value" id="stat-physical">—</div><div class="stat-caption">Units on your shelves</div></article>
-        <article class="stat-card"><div class="stat-label"><span>Reserved / assigned</span><svg class="icon"><use href="#i-clock"/></svg></div><div class="stat-value" id="stat-reserved">—</div><div class="stat-caption">Stock held for unpicked orders</div></article>
-        <article class="stat-card stat-accent"><div class="stat-label"><span>Free factory stock</span><svg class="icon"><use href="#i-check"/></svg></div><div class="stat-value" id="stat-available">—</div><div class="stat-caption">Excludes reservations and assignments</div></article>
-        <article class="stat-card"><div class="stat-label"><span>Sync queue</span><svg class="icon"><use href="#i-arrows"/></svg></div><div class="stat-value" id="stat-pending">—</div><div class="stat-caption" id="stat-sync-caption">Checking Ecwid updates</div></article>
-      </section>
+      <label class="field-label" for="sku">Item SKU</label>
+      <div class="lookup-row">
+        <input id="sku" class="text-input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="250" placeholder="Enter exact SKU">
+        <button id="fetch-item" class="button button-secondary" type="button">Fetch</button>
+      </div>
 
-      <section id="view-pick" class="view-section" aria-label="Pick orders">
-        <div class="section-heading"><div><h2>Order picking <span class="count-badge" id="order-count">—</span></h2><p>Only paid orders can be picked.</p></div><div class="segmented-control" aria-label="Order payment filter"><button class="selected" data-order-status="PAID" aria-pressed="true">Paid</button><button data-order-status="AWAITING_PAYMENT" aria-pressed="false">Awaiting payment</button></div></div>
-        <div class="picking-layout">
-          <section class="card orders-pane" aria-label="Orders"><div class="orders-search"><svg class="icon"><use href="#i-search"/></svg><input id="order-search" type="search" placeholder="Find or enter an Order ID" aria-label="Find order or enter exact Order ID"><button id="open-order-id" class="button button-quiet" title="Open this exact Order ID">Open ID</button><button id="scan-order-id" class="icon-button" title="Scan an order ID" aria-label="Scan an order ID"><svg class="icon"><use href="#i-scan"/></svg></button></div><div id="order-list" class="order-list"><div class="loading-state">Loading orders…</div></div></section>
-          <section class="card order-detail" id="order-detail" aria-label="Selected order"><div class="empty-state large"><div class="empty-icon"><svg class="icon"><use href="#i-pick"/></svg></div><h3>One order at a time.</h3><p>Select an order to view its items<br>and start picking.</p></div></section>
+      <section id="item-result" class="item-result" aria-live="polite" hidden>
+        <div class="item-heading">
+          <div><span id="item-sku" class="item-sku"></span><h2 id="item-name"></h2></div>
+          <svg class="icon item-check"><use href="#i-check"/></svg>
         </div>
+        <dl class="stock-grid">
+          <div><dt>Location</dt><dd id="item-location">—</dd></div>
+          <div><dt>On shelf</dt><dd id="item-on-hand">—</dd></div>
+          <div><dt>Available</dt><dd id="item-available">—</dd></div>
+          <div><dt>Available online</dt><dd id="item-ecwid">—</dd></div>
+        </dl>
+        <p id="item-stock-checked" class="stock-checked"></p>
       </section>
 
-      <section id="view-movement" class="view-section" aria-label="Stock movement" hidden>
-        <div class="section-heading"><div><h2>Record a movement</h2><p>Email sales, in-house use, and incoming stock.</p></div></div>
-        <div class="movement-layout"><section class="card movement-card"><div class="movement-types" aria-label="Movement type"><button class="movement-type selected" data-movement-type="EMAIL_SALE" aria-pressed="true"><svg class="icon"><use href="#i-arrow"/></svg><strong>Email sale</strong><span>Invoice or offline order</span></button><button class="movement-type" data-movement-type="INTERNAL_USE" aria-pressed="false"><svg class="icon"><use href="#i-box"/></svg><strong>In-house use</strong><span>Used in your workshop</span></button><button class="movement-type" data-movement-type="RESTOCK" aria-pressed="false"><svg class="icon"><use href="#i-plus"/></svg><strong>Restock</strong><span>Receive new units</span></button></div><div id="movement-form-host"></div></section>
-          <aside class="movement-help"><div class="card guidance-card"><span class="eyebrow">HOW IT WORKS</span><h3>A clear trail,<br>from shelf to store.</h3><ol><li><span>01</span><div><strong>Identify the item</strong><p>Scan the box QR, or enter its SKU.</p></div></li><li><span>02</span><div><strong>Confirm the movement</strong><p>Check quantity and add a useful note.</p></div></li><li><span>03</span><div><strong>Track the update</strong><p>Physical stock updates on recording. Ecwid updates are tracked in Activity & sync.</p></div></li></ol></div><p class="context-note"><svg class="icon"><use href="#i-pick"/></svg><span>Picking an Ecwid order? Use <a href="#pick">Pick orders</a> so its stock is accounted for once.</span></p></aside></div>
-      </section>
+      <div class="field-block">
+        <label class="field-label" for="quantity">Quantity</label>
+        <div class="quantity-stepper">
+          <button id="quantity-minus" type="button" aria-label="Decrease quantity"><svg class="icon"><use href="#i-minus"/></svg></button>
+          <input id="quantity" type="number" min="1" step="1" inputmode="numeric" value="1" aria-describedby="quantity-help">
+          <button id="quantity-plus" type="button" aria-label="Increase quantity"><svg class="icon"><use href="#i-plus"/></svg></button>
+        </div>
+        <p id="quantity-help" class="field-help">Enter a positive whole number.</p>
+      </div>
 
-      <section id="view-inventory" class="view-section" aria-label="Inventory" hidden>
-        <div class="section-heading"><div><h2>Your inventory <span class="count-badge" id="inventory-count">—</span></h2><p>Single-unit items and independently stocked variations.</p></div><div class="search-field"><svg class="icon"><use href="#i-search"/></svg><input type="search" id="inventory-search" aria-label="Search inventory" placeholder="Search item, SKU, or location"></div></div>
-        <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Item</th><th>Location</th><th class="numeric">Physical</th><th class="numeric">Reserved / assigned</th><th class="numeric">Free</th><th>Supplier demand</th><th class="numeric">Ecwid observed / policy</th></tr></thead><tbody id="inventory-rows"></tbody></table></div><div id="inventory-empty" class="empty-state" hidden><h3>No matching items</h3><p>Try a different item name, SKU, or location.</p></div><div class="table-footnote">Stock-limited items show the latest observed Ecwid quantity. Supplier-backed items stay unlimited online; that does not mean goods are on the shelf. Unassigned demand may be covered by free stock awaiting assignment. Uncovered demand is calculated once per item, not a purchase instruction.</div></div>
-      </section>
+      <div class="field-block">
+        <label class="field-label" for="reason">Reason</label>
+        <select id="reason" class="select-input">
+          <option value="ECWID_PICK">Ecwid Order Pick (−)</option>
+          <option value="EMAIL_SALE">Email Sale (−)</option>
+          <option value="INTERNAL_USE">Internal Use (−)</option>
+          <option value="RESTOCK">Restock (+)</option>
+          <option value="ADJUST_UP">Adjust Up (+)</option>
+          <option value="ADJUST_DOWN">Adjust Down (−)</option>
+        </select>
+      </div>
 
-      <section id="view-activity" class="view-section" aria-label="Activity and sync" hidden>
-        <section class="card sync-health" aria-label="Sync health"><div class="sync-health-heading"><div><h2>Sync health</h2><p id="sync-health-checked">Waiting for sync status</p></div><button id="refresh-sync-health" class="button button-outline" type="button"><svg class="icon"><use href="#i-refresh"/></svg>Refresh status</button></div><dl class="sync-health-metrics"><div><dt>Recent order changes</dt><dd id="sync-health-orders">—</dd><dd class="sync-health-note" id="sync-health-orders-note">Checking order imports</dd></div><div><dt>Incoming updates</dt><dd id="sync-health-incoming">—</dd><dd class="sync-health-note">Ecwid events waiting or processing</dd></div><div><dt>Needs review</dt><dd id="sync-health-exceptions">—</dd><dd class="sync-health-note" id="sync-health-exceptions-note">Stock and order exceptions</dd></div></dl></section>
-        <div class="section-heading"><div><h2>Movement history</h2><p>Who moved it, why, and what happened next.</p></div><span class="subtle-tag" id="movement-count">RECENT MOVEMENTS</span></div>
-        <div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Movement</th><th>Item / reference</th><th class="numeric">Units</th><th>Recorded by</th><th>Ecwid status</th><th>When</th></tr></thead><tbody id="activity-rows"></tbody></table></div><div id="activity-empty" class="empty-state" hidden><div class="empty-icon"><svg class="icon"><use href="#i-activity"/></svg></div><h3>Your stock story starts here.</h3><p>Recorded picks and movements will appear here.</p></div></div>
-        <section class="allocation-history" aria-label="Supplier assignment history"><div class="section-heading"><div><h2>Supplier assignments <span id="allocation-count" class="count-badge">0</span></h2><p>Assignments hold existing shelf stock. They are not receipts or extra stock deductions.</p></div></div><div class="card table-card"><div class="table-scroll"><table><thead><tr><th>Action</th><th>Item / order line</th><th class="numeric">Assigned change</th><th>Recorded by</th><th>When</th></tr></thead><tbody id="allocation-rows"></tbody></table></div><div id="allocation-empty" class="empty-state"><h3>No supplier assignments yet</h3><p>Assign received stock to exact order lines in Pick orders.</p></div></div></section>
-        <div class="sync-layout"><section class="card sync-card"><div class="card-heading"><h3>Ecwid sync queue</h3><span id="sync-count" class="count-badge">0</span></div><div id="sync-list"></div></section><section class="card sync-card"><div class="card-heading"><h3>Needs attention</h3><span id="issues-count" class="count-badge">0</span></div><div id="issues-list"></div></section></div>
-      </section>
-      <footer class="workspace-footer"><span><span class="status-dot"></span>Independent SKUs · Unit quantities</span><span id="updated-at">Waiting for workspace data</span></footer>
-    </main>
-  </div>
+      <div id="order-field" class="field-block" hidden>
+        <label class="field-label" for="order-id">Exact Ecwid Order ID</label>
+        <div class="lookup-row">
+          <input id="order-id" class="text-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="100" placeholder="e.g. 9440">
+          <button id="fetch-order" class="button button-secondary" type="button">Find</button>
+        </div>
+        <div id="order-result" class="order-result" aria-live="polite" hidden></div>
+        <p id="order-help" class="field-help">Enter the exact order ID from the pick list. The app will confirm that it is paid and contains this SKU.</p>
+      </div>
 
-  <nav class="mobile-navigation" aria-label="Mobile navigation"><a href="#pick" data-view="pick" class="active"><svg class="icon"><use href="#i-pick"/></svg><span>Pick orders</span></a><a href="#movement" data-view="movement"><svg class="icon"><use href="#i-arrows"/></svg><span>Movement</span></a><a href="#inventory" data-view="inventory"><svg class="icon"><use href="#i-grid"/></svg><span>Inventory</span></a><a href="#activity" data-view="activity"><svg class="icon"><use href="#i-activity"/></svg><span>Activity</span></a></nav>
+      <div class="field-block">
+        <label id="notes-label" class="field-label" for="notes">Notes <span>(optional)</span></label>
+        <textarea id="notes" class="text-area" rows="3" maxlength="900" placeholder="Invoice, workbench, delivery, or other detail"></textarea>
+        <p id="notes-help" class="field-help" hidden>A reason is required for stock adjustments.</p>
+      </div>
+
+      <div id="form-error" class="form-error" role="alert" hidden></div>
+      <button id="submit-movement" class="button submit-button" type="submit" disabled>
+        <svg class="icon"><use href="#i-check"/></svg>
+        <span>Submit Stock Change</span>
+      </button>
+    </form>
+  </main>
+
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <dialog id="scanner-dialog" class="scanner-dialog"><div class="scanner-heading"><div><span class="eyebrow">IDENTIFY ITEM</span><h2>Scan the box QR</h2></div><button id="close-scanner" class="icon-button" aria-label="Close camera"><svg class="icon"><use href="#i-close"/></svg></button></div><div id="qr-reader"></div><p id="scanner-help">Point your camera at the QR code on the item box.</p><button id="scanner-manual" class="button button-outline">Enter SKU manually instead</button></dialog>
+
+  <dialog id="scanner-dialog" class="scanner-dialog">
+    <div class="scanner-heading">
+      <div><p class="eyebrow">ITEM SCANNER</p><h2>Scan the box QR</h2></div>
+      <button id="close-scanner" class="icon-button" type="button" aria-label="Close camera"><svg class="icon"><use href="#i-close"/></svg></button>
+    </div>
+    <div id="qr-reader"></div>
+    <p id="scanner-help">Starting the back camera…</p>
+    <div class="scanner-actions">
+      <button id="switch-camera" class="button button-secondary" type="button"><svg class="icon"><use href="#i-camera-switch"/></svg>Use front camera</button>
+      <button id="scanner-manual" class="button button-quiet" type="button">Enter SKU instead</button>
+    </div>
+  </dialog>
 </body>
 </html>
