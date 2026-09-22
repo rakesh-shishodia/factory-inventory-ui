@@ -244,6 +244,15 @@ describe('configuration, origin, and routing boundaries', () => {
     const response = await worker.fetch(request('/api/sync'), env, ctx);
     expect(await response.json()).toMatchObject({ sync_state: [{ key: 'orders_tracking_started', value: timestamp }] });
   });
+  it('exposes recent feed health but not polling leases or internal cursors', async () => {
+    for (const [key, value] of Object.entries({ orders_recent_watermark: timestamp, orders_recent_last_success: timestamp,
+      orders_recent_status: 'CURRENT', orders_recent_error: '', orders_recent_poll_cursor: 'private cursor', orders_poll_lease: 'private lease' })) {
+      sqlite.prepare('INSERT INTO sync_state(key,value,updated_at) VALUES(?,?,?)').run(key, value, timestamp);
+    }
+    const response = await worker.fetch(request('/api/sync'), env, ctx);
+    const body = await response.json() as { sync_state: { key: string; value: string }[] };
+    expect(body.sync_state.map(entry => entry.key).sort()).toEqual(['orders_recent_error','orders_recent_last_success','orders_recent_status','orders_recent_watermark']);
+  });
 });
 
 describe('opening staging HTTP boundary', () => {

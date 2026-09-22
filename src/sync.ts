@@ -1,6 +1,8 @@
 import { EcwidClient, EcwidError, canonicalVariationOptions, parseWebhook, readBoundedJson, verifyWebhookSignature,
   type EcwidOrder, type EcwidWebhook, type EcwidFetch, type EcwidProduct } from './ecwid';
 import { DomainError, PICKABLE_FULFILLMENT_STATUSES, TERMINAL_FULFILLMENT_STATUSES, type InventoryMode } from './domain';
+import { opaqueWorkbookPolicy, orderOptionsHashMaterial, workbookLineMatches } from './workbook-identity';
+import type { WorkbookTarget } from './pilot-scope';
 
 export type SyncMessage = { kind: 'outbox' | 'webhook'; id: string };
 export type SyncEnv = Pick<Env, 'DB' | 'SYNC_QUEUE' | 'ECWID_MODE' | 'LIVE_SYNC_ENABLED' | 'ECWID_STORE_ID'> & {
@@ -18,11 +20,6 @@ export function ecwidClient(env: SyncEnv, fetcher?: EcwidFetch): EcwidClient {
   return new EcwidClient({ storeId: env.ECWID_STORE_ID, token: env.ECWID_TOKEN ?? '' }, fetcher);
 }
 
-async function putState(db: D1Database, key: string, value: string): Promise<void> {
-  await db.prepare(`INSERT INTO sync_state(key,value,updated_at) VALUES (?,?,?)
-    ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`).bind(key, value, now()).run();
-}
-
 async function getState(db: D1Database, key: string): Promise<string | null> {
   return db.prepare('SELECT value FROM sync_state WHERE key=?').bind(key).first<string>('value');
 }
@@ -32,9 +29,10 @@ function issueStatement(db: D1Database, id: string, kind: string, item: string |
     VALUES (?,?,?,?,?,'OPEN',?) ON CONFLICT(id) DO NOTHING`).bind(id, kind, item, order, message, now());
 }
 
-export async function orderSnapshotHash(order: EcwidOrder): Promise<string> {
-  const canonical = order.items.map((line) => [line.id, line.productId, line.sku, line.quantity,
-    line.combinationId, canonicalVariationOptions(line.selectedOptions) ?? line.selectedOptions, line.digital])
+export async function orderSnapshotHash(order: EcwidOrder, options: { allowSnapshotEvidence?: boolean; workbookTargets?: WorkbookTarget[] } = {}): Promise<string> {
+  const canonical = (await Promise.all(order.items.map(async line => [line.id, line.productId, line.sku, line.quantity,
+    line.combinationId, await orderOptionsHashMaterial(line,options.allowSnapshotEvidence===true,
+      options.workbookTargets?.some(target=>opaqueWorkbookPolicy(target)&&workbookLineMatches(line,target,options.allowSnapshotEvidence===true))??false), line.digital])))
     .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical)));
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -51,17 +49,20 @@ export async function upsertOrderSnapshot(db: D1Database, order: EcwidOrder,
     const current = await db.prepare('SELECT needs_review FROM orders WHERE id=?').bind(order.id).first<number>('needs_review');
     return { id: order.id, needs_review: current === 1, skipped: true };
   }
-  const hash = await orderSnapshotHash(order);
+  const workbookTargets=(await db.prepare(`SELECT id,ecwid_product_id,ecwid_combination_id,ecwid_option_signature,sku,name,sku_source,option_policy
+    FROM workbook_managed_targets`).all<WorkbookTarget & {id:string}>()).results;
+  const hash = await orderSnapshotHash(order,{workbookTargets});
   const timestamp = now();
   const lines = JSON.stringify(order.items.map((line) => {
     const options = canonicalVariationOptions(line.selectedOptions);
-    return { ...line,
+    const outside=workbookTargets.filter(target=>workbookLineMatches(line,target));
+    return { id:line.id,productId:line.productId,sku:line.sku,name:line.name,quantity:line.quantity,combinationId:line.combinationId,
     // Ecwid documents order-line trackQuantity as the low-stock notification flag.
     // Catalog mapping validation checks actual quantity/unlimited settings instead.
-      optionSignature: options === null ? null : JSON.stringify(options),
+      optionSignature: outside.length===1?outside[0].ecwid_option_signature:options === null ? null : JSON.stringify(options),
       supported: !line.digital && Boolean(line.sku) && options !== null
         && (line.combinationId ? options.length > 0 : options.length === 0) ? 1 : 0,
-      physicalIdentity: !line.digital && Boolean(line.sku) && options !== null ? 1 : 0,
+      workbookTargetId: outside.length===1?outside[0].id:null,
     };
   }));
   const unsupportedStatus = !['PAID', 'AWAITING_PAYMENT', 'CANCELLED', 'REFUNDED', 'INCOMPLETE'].includes(order.paymentStatus)
@@ -89,10 +90,9 @@ export async function upsertOrderSnapshot(db: D1Database, order: EcwidOrder,
         AND i.ecwid_combination_id IS json_extract(j.value,'$.combinationId')
         AND i.ecwid_option_signature=json_extract(j.value,'$.optionSignature')
         AND i.sku=json_extract(j.value,'$.sku') COLLATE NOCASE AND i.active=1
-      LEFT JOIN workbook_managed_targets w ON json_extract(j.value,'$.physicalIdentity')=1
+      LEFT JOIN workbook_managed_targets w ON w.id=json_extract(j.value,'$.workbookTargetId')
         AND w.ecwid_product_id=json_extract(j.value,'$.productId')
         AND w.ecwid_combination_id IS json_extract(j.value,'$.combinationId')
-        AND w.ecwid_option_signature=json_extract(j.value,'$.optionSignature')
         AND w.sku=json_extract(j.value,'$.sku') COLLATE NOCASE
         AND NOT EXISTS(SELECT 1 FROM items conflict WHERE conflict.sku=json_extract(j.value,'$.sku') COLLATE NOCASE
           OR (conflict.ecwid_product_id=json_extract(j.value,'$.productId')
@@ -366,13 +366,14 @@ export async function recoverStaleProcessing(db: D1Database, staleBefore = new D
 
 export async function pumpSync(env: SyncEnv): Promise<{ queued: number }> {
   await recoverStaleProcessing(env.DB);
-  const events = await env.DB.prepare(`SELECT event_id AS id FROM webhook_events WHERE status='PENDING' ORDER BY updated_at,event_id LIMIT 25`).all<{ id: string }>();
+  // Keep scheduled polling + queue fan-out within the Free Worker invocation budget.
+  const events = await env.DB.prepare(`SELECT event_id AS id FROM webhook_events WHERE status='PENDING' ORDER BY updated_at,event_id LIMIT 5`).all<{ id: string }>();
   const stock = await env.DB.prepare(`SELECT id FROM outbox WHERE status='PENDING'
     AND NOT EXISTS(SELECT 1 FROM sync_issues s WHERE s.item_id=outbox.item_id AND s.status='OPEN')
     AND NOT EXISTS(SELECT 1 FROM outbox other WHERE other.item_id=outbox.item_id AND other.id!=outbox.id
       AND (other.status IN ('PROCESSING','UNKNOWN','BLOCKED') OR (other.status='PENDING'
         AND other.rowid<outbox.rowid)))
-    ORDER BY rowid LIMIT 25`).all<{ id: string }>();
+    ORDER BY rowid LIMIT 5`).all<{ id: string }>();
   let queued = 0;
   for (const event of events.results) if (await enqueueSync(env, { kind: 'webhook', id: event.id })) queued++;
   for (const row of stock.results) if (await enqueueSync(env, { kind: 'outbox', id: row.id })) queued++;
@@ -380,7 +381,8 @@ export async function pumpSync(env: SyncEnv): Promise<{ queued: number }> {
 }
 
 /** Full pagination with a persisted cursor, including old orders that are still awaiting payment. */
-export async function pollOrders(env: SyncEnv, fetcher?: EcwidFetch): Promise<{ processed: number; complete: boolean; demo?: boolean }> {
+export async function pollHistoricalOrders(env: SyncEnv, fetcher?: EcwidFetch,
+  options: { maximumOrders?: number; lease?: string } = {}): Promise<{ processed: number; complete: boolean; demo?: boolean }> {
   if (env.ECWID_MODE !== 'live') return { processed: 0, complete: true, demo: true };
   if (env.ORDER_SYNC_ENABLED !== 'true') throw new DomainError(409, 'ORDER_SYNC_PAUSED', 'Order imports are paused until the reviewed opening cutover is complete.');
   const client = ecwidClient(env, fetcher);
@@ -392,9 +394,13 @@ export async function pollOrders(env: SyncEnv, fetcher?: EcwidFetch): Promise<{ 
     : { offset: 0, createdTo: Math.floor(Date.now() / 1000) };
   let processed = 0;
   let complete = false;
-  for (let page = 0; page < 2; page++) {
-    const response = await client.listOrders(cursor);
-    if (response.offset !== cursor.offset || (response.count === 0 && cursor.offset < response.total)) {
+  const maximumOrders = options.maximumOrders ?? 3;
+  if (!Number.isInteger(maximumOrders) || maximumOrders < 1 || maximumOrders > 3) throw new Error('Invalid historical polling budget.');
+  for (let page = 0; page < 2 && processed < maximumOrders; page++) {
+    const limit = maximumOrders - processed;
+    const response = await client.listOrders({ ...cursor, limit });
+    if (response.offset !== cursor.offset || response.count > limit || cursor.offset + response.count > response.total
+      || (response.count === 0 && cursor.offset < response.total)) {
       throw new Error('Ecwid order pagination was inconsistent; cursor was retained.');
     }
     for (const order of response.items) {
@@ -408,14 +414,167 @@ export async function pollOrders(env: SyncEnv, fetcher?: EcwidFetch): Promise<{ 
     }
     cursor.offset += response.count;
     if (cursor.offset >= response.total) { complete = true; break; }
-    await putState(env.DB, 'orders_poll_cursor', JSON.stringify(cursor));
+    await savePollState(env.DB, { orders_poll_cursor: JSON.stringify(cursor) }, options.lease);
   }
   if (complete) {
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM sync_state WHERE key='orders_poll_cursor'"),
-      env.DB.prepare(`INSERT INTO sync_state(key,value,updated_at) VALUES ('orders_last_full_poll',?,?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`).bind(now(), now()),
-    ]);
-  } else await putState(env.DB, 'orders_poll_cursor', JSON.stringify(cursor));
+    await savePollState(env.DB, { orders_poll_cursor: '', orders_last_full_poll: now() }, options.lease);
+  } else await savePollState(env.DB, { orders_poll_cursor: JSON.stringify(cursor) }, options.lease);
   return { processed, complete };
+}
+
+const RECENT_APPLY_LIMIT = 3;
+const RECENT_MAX_ORDERS = 1_000;
+const RECENT_OVERLAP_SECONDS = 120;
+const RECENT_SETTLE_SECONDS = 5;
+const POLL_LEASE_MS = 120_000;
+interface RecentCursor {
+  version: 1;
+  updatedFrom: number;
+  updatedTo: number;
+  phase: 'APPLY' | 'VERIFY';
+  offset: number;
+  total: number | null;
+  seen: Array<{ id: string; signature: string }>;
+}
+
+class RecentPollError extends Error {
+  constructor(message: string, readonly restart = false, readonly overloaded = false) { super(message); }
+}
+
+/** One atomic state write, fenced against expired/replaced pollers. No stale worker can advance a watermark. */
+async function savePollState(db: D1Database, values: Record<string, string>, lease?: string): Promise<void> {
+  const result = await db.prepare(`INSERT INTO sync_state(key,value,updated_at)
+    SELECT j.key,j.value,? FROM json_each(?) j WHERE (? IS NULL OR EXISTS(
+      SELECT 1 FROM sync_state l WHERE l.key='orders_poll_lease' AND l.value=? AND json_extract(l.value,'$.expiresAt')>?))
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at RETURNING key`)
+    .bind(now(), JSON.stringify(values), lease ?? null, lease ?? null, Date.now()).all<{ key: string }>();
+  if (result.results.length !== Object.keys(values).length) throw new RecentPollError('Order poll lease expired; progress was retained.');
+}
+
+function parseRecentCursor(raw: string, baseline: number, watermark: number | null): RecentCursor {
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw new RecentPollError('Invalid recent-order checkpoint; administrator review required.'); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RecentPollError('Invalid recent-order checkpoint.');
+  const c = value as RecentCursor;
+  if (c.version !== 1 || !['APPLY', 'VERIFY'].includes(c.phase) || !Number.isSafeInteger(c.updatedFrom)
+    || !Number.isSafeInteger(c.updatedTo) || c.updatedFrom !== Math.max(baseline, (watermark ?? baseline) - RECENT_OVERLAP_SECONDS) || c.updatedFrom > c.updatedTo
+    || c.updatedTo > Math.floor(Date.now() / 1000) || (watermark !== null && c.updatedTo < watermark)
+    || !Number.isSafeInteger(c.offset) || c.offset < 0 || !Array.isArray(c.seen) || c.seen.length > RECENT_MAX_ORDERS
+    || (c.total === null ? c.seen.length !== 0 : !Number.isSafeInteger(c.total) || c.total < c.seen.length || c.total > RECENT_MAX_ORDERS)
+    || c.seen.some(entry => !entry || typeof entry.id !== 'string' || !entry.id || entry.id.length > 200
+      || typeof entry.signature !== 'string' || !/^[a-f0-9]{64}$/.test(entry.signature))
+    || new Set(c.seen.map(entry => entry.id)).size !== c.seen.length
+    || (c.phase === 'APPLY' ? c.offset !== c.seen.length : c.total !== c.seen.length || c.offset > c.seen.length)) {
+    throw new RecentPollError('Invalid recent-order checkpoint; administrator review required.');
+  }
+  return c;
+}
+
+async function recentOrderSignature(order: EcwidOrder): Promise<string> {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([
+    order.id, order.createdAt, order.updatedAt, order.paymentStatus, order.fulfillmentStatus, await orderSnapshotHash(order),
+  ])));
+  return Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** Recent updates are independent of order creation date and status. Historical scans are only a fallback.
+ * At most 3 snapshot transactions + bounded state queries per call, leaving room for pumpSync on Free D1.
+ * Ecwid offset pages are not snapshots: a second matching pass is required before advancing the watermark.
+ */
+export async function pollOrders(env: SyncEnv, fetcher?: EcwidFetch): Promise<{
+  processed: number; complete: boolean; demo?: boolean; busy?: boolean; historical_processed?: number; historical_error?: boolean;
+}> {
+  if (env.ECWID_MODE !== 'live') return { processed: 0, complete: true, demo: true };
+  if (env.ORDER_SYNC_ENABLED !== 'true') throw new DomainError(409, 'ORDER_SYNC_PAUSED', 'Order imports are paused until the reviewed opening cutover is complete.');
+  const lease = JSON.stringify({ token: crypto.randomUUID(), expiresAt: Date.now() + POLL_LEASE_MS });
+  const claimed = await env.DB.prepare(`INSERT INTO sync_state(key,value,updated_at) VALUES('orders_poll_lease',?,?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    WHERE json_extract(sync_state.value,'$.expiresAt')<=? RETURNING value`).bind(lease, now(), Date.now()).first<string>('value');
+  if (claimed !== lease) return { processed: 0, complete: false, busy: true };
+  let cursor: RecentCursor | undefined;
+  let processed = 0;
+  try {
+    const rows = await env.DB.prepare(`SELECT key,value FROM sync_state WHERE key IN
+      ('orders_tracking_started','orders_recent_watermark','orders_recent_poll_cursor')`).all<{ key: string; value: string }>();
+    const state = Object.fromEntries(rows.results.map(row => [row.key, row.value]));
+    const baseline = Math.floor(Date.parse(state.orders_tracking_started ?? '') / 1000);
+    const watermark = state.orders_recent_watermark ? Math.floor(Date.parse(state.orders_recent_watermark) / 1000) : null;
+    if (!Number.isSafeInteger(baseline) || baseline < 0 || baseline > Math.floor(Date.now() / 1000)
+      || (watermark !== null && (!Number.isSafeInteger(watermark) || watermark < baseline || watermark > Math.floor(Date.now() / 1000)))) {
+      throw new RecentPollError('A valid opening-cutover tracking baseline is required before recent order polling.');
+    }
+    cursor = state.orders_recent_poll_cursor ? parseRecentCursor(state.orders_recent_poll_cursor, baseline, watermark) : {
+      version: 1, updatedFrom: Math.max(baseline, (watermark ?? baseline) - RECENT_OVERLAP_SECONDS),
+      updatedTo: Math.floor(Date.now() / 1000) - RECENT_SETTLE_SECONDS, phase: 'APPLY', offset: 0, total: null, seen: [],
+    };
+    if (cursor.updatedTo < cursor.updatedFrom) {
+      await savePollState(env.DB, { orders_recent_status: 'PENDING', orders_recent_error: '' }, lease);
+      return { processed, complete: false };
+    }
+    await savePollState(env.DB, { orders_recent_poll_cursor: JSON.stringify(cursor), orders_recent_status: 'PENDING', orders_recent_error: '' }, lease);
+    const client = ecwidClient(env, fetcher);
+    // An APPLY page may immediately start VERIFY, but neither phase loops unboundedly.
+    for (let pass = 0; pass < 2; pass++) {
+      const phase = cursor.phase;
+      const limit = phase === 'APPLY' ? RECENT_APPLY_LIMIT : 100;
+      const page = await client.listOrders({ updatedFrom: cursor.updatedFrom, updatedTo: cursor.updatedTo, offset: cursor.offset, limit });
+      if (page.total > RECENT_MAX_ORDERS) throw new RecentPollError('Recent-order window exceeds 1000 orders; administrator review required.', false, true);
+      if (page.offset !== cursor.offset || page.count > limit || page.count !== page.items.length
+        || cursor.offset + page.count > page.total || (!page.count && cursor.offset < page.total)
+        || (cursor.total !== null && cursor.total !== page.total)) {
+        throw new RecentPollError('Ecwid recent-order pages changed; the same window will restart.', true);
+      }
+      cursor.total = page.total;
+      const entries = await Promise.all(page.items.map(async order => {
+        const updated = Date.parse(order.updatedAt) / 1000;
+        if (!order.id || order.id.length > 200 || updated < cursor!.updatedFrom || updated > cursor!.updatedTo || !Number.isFinite(updated)) {
+          throw new RecentPollError('Ecwid returned an order outside the requested update window.', true);
+        }
+        return { id: order.id, signature: await recentOrderSignature(order) };
+      }));
+      if (new Set(entries.map(entry => entry.id)).size !== entries.length) throw new RecentPollError('Ecwid returned duplicate order IDs; the window will restart.', true);
+      if (phase === 'APPLY') {
+        if (entries.some(entry => cursor!.seen.some(seen => seen.id === entry.id))) throw new RecentPollError('Ecwid recent-order pages overlapped; the window will restart.', true);
+        for (const order of page.items) { await upsertOrderSnapshot(env.DB, order); processed++; }
+        cursor.seen.push(...entries);
+        cursor.offset += page.count;
+        if (cursor.offset === page.total) { cursor.phase = 'VERIFY'; cursor.offset = 0; }
+        else break;
+      } else {
+        if (entries.some((entry, index) => entry.id !== cursor!.seen[cursor!.offset + index]?.id
+          || entry.signature !== cursor!.seen[cursor!.offset + index]?.signature)) {
+          throw new RecentPollError('Ecwid recent-order verification changed; the same window will restart.', true);
+        }
+        cursor.offset += page.count;
+        if (cursor.offset === page.total) {
+          await savePollState(env.DB, { orders_recent_poll_cursor: '', orders_recent_watermark: new Date(cursor.updatedTo * 1000).toISOString(),
+            orders_recent_last_success: now(), orders_recent_status: 'CURRENT', orders_recent_error: '' }, lease);
+          // Never spend a second snapshot budget when this invocation already applied recent orders.
+          if (processed === 0) {
+            try {
+              const historical = await pollHistoricalOrders(env, fetcher, { maximumOrders: 2, lease });
+              return { processed, complete: true, historical_processed: historical.processed };
+            } catch {
+              // Reconciliation failure does not invalidate the independently verified recent window.
+              return { processed, complete: true, historical_error: true };
+            }
+          }
+          return { processed, complete: true };
+        }
+        break;
+      }
+    }
+    await savePollState(env.DB, { orders_recent_poll_cursor: JSON.stringify(cursor), orders_recent_status: 'PENDING', orders_recent_error: '' }, lease);
+    return { processed, complete: false };
+  } catch (error) {
+    const values: Record<string, string> = { orders_recent_status: error instanceof RecentPollError && error.overloaded ? 'OVERLOADED' : 'ERROR',
+      orders_recent_error: error instanceof RecentPollError ? error.message : 'Recent order polling failed; its watermark has not advanced. Retry or check integration access.' };
+    if (cursor && error instanceof RecentPollError && error.restart) {
+      values.orders_recent_poll_cursor = JSON.stringify({ ...cursor, phase: 'APPLY', offset: 0, total: null, seen: [] });
+    }
+    await savePollState(env.DB, values, lease);
+    throw error;
+  } finally {
+    await env.DB.prepare("DELETE FROM sync_state WHERE key='orders_poll_lease' AND value=?").bind(lease).run();
+  }
 }

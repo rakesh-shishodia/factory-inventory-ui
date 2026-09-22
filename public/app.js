@@ -119,6 +119,25 @@ function supplierLineStatus(line) {
   return 'Assigned to this order';
 }
 function actorName(actor) { return typeof actor === 'string' ? actor : actor?.name || actor?.email || actor?.id || 'Inventory team'; }
+function openingImportPending() {
+  return state.session?.mode === 'live' && !state.syncState.some(entry => entry.key === 'orders_tracking_started' && entry.value);
+}
+function pageHeading() {
+  const copy = VIEW_COPY[state.view];
+  if (state.session?.mode === 'live' && state.session.inventory_enabled === false && ['pick', 'movement'].includes(state.view)) {
+    return [copy[0], openingImportPending() ? 'Preparing your inventory.' : 'Stock recording is paused.',
+      openingImportPending() ? 'Opening stock and unpicked orders have not been activated. Empty counts do not mean zero factory stock.'
+        : 'Review the workspace status before recording any physical movement.'];
+  }
+  return copy;
+}
+function renderPageHeading() {
+  const [label, title, description] = pageHeading();
+  $('#breadcrumb-current').textContent = label;
+  $('#page-title').textContent = title;
+  $('#page-description').textContent = description;
+  document.title = `${label} · Factory Inventory`;
+}
 function timestamp(date, short = false) {
   if (!date) return '—';
   const parsed = new Date(date);
@@ -178,6 +197,7 @@ function renderSession() {
   $('#actor-initials').textContent = name.split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase();
   $('#demo-banner').hidden = state.session.mode !== 'demo';
   $('#inventory-paused-banner').hidden = state.session.inventory_enabled !== false;
+  renderPageHeading();
   renderConnection();
 }
 
@@ -196,9 +216,10 @@ function renderConnection() {
 
 function renderStats() {
   const d = state.dashboard;
-  $('#stat-physical').textContent = value(d.physical_units ?? state.items.reduce((s, x) => s + Number(x.on_hand || 0), 0));
-  $('#stat-reserved').textContent = value(d.reserved_units ?? state.items.reduce((s, x) => s + Number(x.reserved || 0), 0));
-  $('#stat-available').textContent = value(d.available_units ?? state.items.reduce((s, x) => s + Number(x.available || 0), 0));
+  const notImported = openingImportPending() && Number(d.items_count ?? state.items.length) === 0;
+  $('#stat-physical').textContent = notImported ? '—' : value(d.physical_units ?? state.items.reduce((s, x) => s + Number(x.on_hand || 0), 0));
+  $('#stat-reserved').textContent = notImported ? '—' : value(d.reserved_units ?? state.items.reduce((s, x) => s + Number(x.reserved || 0), 0));
+  $('#stat-available').textContent = notImported ? '—' : value(d.available_units ?? state.items.reduce((s, x) => s + Number(x.available || 0), 0));
   $('#stat-pending').textContent = value(d.pending_sync ?? state.outbox.filter(x => ['QUEUED', 'PENDING', 'SENDING', 'PROCESSING', 'RETRYABLE'].includes(String(x.status).toUpperCase())).length);
   const issues = Number(d.attention_count ?? state.issues.length);
   $('#stat-sync-caption').textContent = issues ? `${value(issues)} ${issues === 1 ? 'issue needs' : 'issues need'} attention` : state.session?.mode === 'demo' ? 'Demo updates stay in this workspace' : 'Tracked updates to your Ecwid stock';
@@ -267,7 +288,8 @@ function renderOrders() {
   list.replaceChildren();
   if (!filtered.length) {
     const empty = element('div', 'empty-state');
-    empty.append(element('h3', '', search ? 'No matching orders' : state.orderStatus === 'PAID' ? 'All caught up.' : 'No orders awaiting payment'), element('p', '', search ? 'Try an order number or customer name.' : state.orderStatus === 'PAID' ? 'Paid orders with items left to pick will appear here.' : 'Awaiting-payment orders reserve stock until paid or cancelled.'));
+    const pending = openingImportPending();
+    empty.append(element('h3', '', pending ? 'Opening orders pending' : search ? 'No matching orders' : state.orderStatus === 'PAID' ? 'No paid orders listed' : 'No orders awaiting payment'), element('p', '', pending ? 'The opening import is not active yet. This empty list does not confirm that all factory orders are picked.' : search ? 'Try an order number or customer name.' : state.orderStatus === 'PAID' ? 'Paid orders with items left to pick will appear here. Check order-update health before relying on an empty list.' : 'Awaiting-payment orders reserve stock until paid or cancelled.'));
     list.append(empty);
     return;
   }
@@ -839,20 +861,38 @@ function applySyncData(data) {
   }
 }
 
+function orderFeedHealth(nowMs = Date.now()) {
+  const entry = key => state.syncState.find(row => row.key === key)?.value;
+  if (state.syncCheckedAt === null) return { text: '—', label: 'Checking orders', note: 'Waiting for order-update status', attention: false };
+  if (state.session?.mode !== 'live') return { text: 'Local demo data', label: 'Demo sync', note: 'Live order imports are not used in demo', attention: false };
+  if (openingImportPending()) return { text: 'Opening import not active', label: 'Opening pending', note: 'Stock and unpicked orders must be verified before activation', attention: true };
+  if (!state.session.order_sync_enabled) return { text: 'Order updates paused', label: 'Orders paused', note: 'New Ecwid order changes are not being imported', attention: true };
+  const watermark = entry('orders_recent_watermark');
+  const checkedThrough = watermark ? Date.parse(watermark) : NaN;
+  const status = entry('orders_recent_status');
+  const last = Number.isFinite(checkedThrough) ? `Last verified through ${timestamp(watermark)}` : 'No recent order window has completed';
+  if (['ERROR', 'OVERLOADED'].includes(status)) return { text: status === 'OVERLOADED' ? 'Order-update backlog' : 'Order-update check failed',
+    label: 'Orders need attention', note: `${last}. ${entry('orders_recent_error') || 'Ask an administrator to check the order feed.'}`, attention: true };
+  if (!Number.isFinite(checkedThrough) || checkedThrough > nowMs || nowMs - checkedThrough > 10 * 60_000) {
+    return { text: Number.isFinite(checkedThrough) ? 'Order updates are behind' : 'First recent check pending', label: 'Orders behind', note: `${last}. Do not treat an empty list as current.`, attention: true };
+  }
+  if (status !== 'CURRENT') return { text: 'Checking recent changes', label: 'Orders catching up', note: last, attention: true };
+  return { text: timestamp(watermark), label: 'Orders checked', note: 'Ecwid changes verified through this time; newer changes may still be pending', attention: false };
+}
+
 function renderSyncHealth() {
   const live = state.session?.mode === 'live';
   const loaded = state.syncCheckedAt !== null;
-  const latestPoll = state.syncState.find(entry => entry.key === 'orders_last_full_poll');
+  const orderHealth = orderFeedHealth();
   const pendingIncoming = state.inboxCounts.filter(entry => ['PENDING', 'PROCESSING'].includes(String(entry.status).toUpperCase()))
     .reduce((sum, entry) => sum + Number(entry.count || 0), 0);
   const blockedIncoming = state.inboxCounts.filter(entry => ['BLOCKED', 'UNKNOWN', 'FAILED'].includes(String(entry.status).toUpperCase()))
     .reduce((sum, entry) => sum + Number(entry.count || 0), 0);
   const openIssues = Number(state.dashboard.attention_count ?? state.issues.filter(issue => !issue.resolved_at && String(issue.status).toUpperCase() !== 'RESOLVED').length);
   const pendingStock = Number(state.dashboard.pending_sync ?? state.outbox.filter(job => ['PENDING', 'PROCESSING'].includes(String(job.status).toUpperCase())).length);
-  const orderText = !loaded ? '—' : live ? latestPoll ? timestamp(latestPoll.value || latestPoll.updated_at) : 'Initial order import not complete' : 'Local demo data';
-  $('#sync-health-orders').textContent = orderText;
-  $('#sync-health-orders').classList.toggle('sync-health-attention', loaded && live && !latestPoll);
-  $('#sync-health-orders-note').textContent = live ? 'Most recent complete check of Ecwid orders' : 'Live order imports are not used in demo';
+  $('#sync-health-orders').textContent = orderHealth.text;
+  $('#sync-health-orders').classList.toggle('sync-health-attention', orderHealth.attention);
+  $('#sync-health-orders-note').textContent = orderHealth.note;
   $('#sync-health-incoming').textContent = loaded ? value(pendingIncoming) : '—';
   $('#sync-health-exceptions').textContent = loaded ? value(openIssues) : '—';
   $('#sync-health-exceptions').classList.toggle('sync-health-attention', openIssues > 0 || blockedIncoming > 0);
@@ -860,9 +900,9 @@ function renderSyncHealth() {
   $('#sync-health-checked').textContent = state.syncRefreshing ? 'Checking the latest status…' : loaded ? `Status checked ${timestamp(state.syncCheckedAt)}${live && !state.session.live_sync_enabled ? ' · Ecwid stock updates paused' : ''}` : 'Waiting for sync status';
   const quick = $('#quick-sync-status');
   const text = !loaded ? 'Checking sync' : openIssues ? `${value(openIssues)} ${openIssues === 1 ? 'issue' : 'issues'}` : blockedIncoming ? `${value(blockedIncoming)} blocked`
-    : live && !latestPoll ? 'Import pending' : pendingStock + pendingIncoming > 0 ? `${value(pendingStock + pendingIncoming)} pending` : live ? state.session.live_sync_enabled ? 'Sync clear' : 'Sync paused' : 'Demo sync';
+    : orderHealth.attention ? orderHealth.label : pendingStock + pendingIncoming > 0 ? `${value(pendingStock + pendingIncoming)} pending` : live ? state.session.live_sync_enabled ? 'Sync clear' : 'Sync paused' : 'Demo sync';
   $('span', quick).textContent = state.syncRefreshing ? 'Checking…' : text;
-  quick.classList.toggle('has-attention', loaded && (openIssues > 0 || blockedIncoming > 0 || (live && !latestPoll)));
+  quick.classList.toggle('has-attention', loaded && (openIssues > 0 || blockedIncoming > 0 || orderHealth.attention));
   quick.setAttribute('aria-label', `${text}. Refresh sync status without changing your current form.`);
   quick.disabled = state.loading || state.syncRefreshing || !navigator.onLine;
   $('#refresh-sync-health').disabled = state.loading || state.syncRefreshing || !navigator.onLine;
@@ -960,11 +1000,7 @@ function navigate() {
     node.classList.toggle('active', active);
     if (active) node.setAttribute('aria-current', 'page'); else node.removeAttribute('aria-current');
   });
-  const [label, title, description] = VIEW_COPY[view];
-  $('#breadcrumb-current').textContent = label;
-  $('#page-title').textContent = title;
-  $('#page-description').textContent = description;
-  document.title = `${label} · Factory Inventory`;
+  renderPageHeading();
   if (view === 'movement') renderMovementForm();
   if (view === 'pick' && state.selectedOrder) renderOrderDetail();
   renderPending();

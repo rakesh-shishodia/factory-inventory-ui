@@ -31,7 +31,7 @@
   }],
   "queues": {
     "producers": [{ "binding": "SYNC_QUEUE", "queue": "inventory-sync-local" }],
-    "consumers": [{ "queue": "inventory-sync-local", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 3 }]
+    "consumers": [{ "queue": "inventory-sync-local", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 3 }]
   },
   "triggers": { "crons": ["*/5 * * * *"] }
 }

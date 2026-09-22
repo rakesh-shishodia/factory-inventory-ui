@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util';
 import { canonicalVariationOptions, EcwidClient, ECWID_ORDER_LIST_FIELDS, ECWID_PRODUCT_LIST_FIELDS, productStockTargets, type EcwidFetch, type EcwidPage, type EcwidOrder, type EcwidProduct } from '../src/ecwid';
 import { loadReadOnlyCredentials } from './ecwid-readonly';
 import { PICKABLE_FULFILLMENT_STATUSES, TERMINAL_FULFILLMENT_STATUSES } from '../src/domain';
+import { sanitizedOpeningOrder } from '../src/workbook-identity';
 
 /** Defense in depth: the snapshot cannot use the adapter's write methods. */
 export function getOnlyEcwidFetch(storeId: string, fetcher: EcwidFetch = fetch): EcwidFetch {
@@ -114,14 +115,9 @@ export async function fetchReadOnlySnapshot(credentials: { storeId: string; toke
   const pendingIds = new Set(pending.map(order => order.id));
   // Separate normalized evidence for the opening importer. Do not drop digital
   // or stock-policy evidence, and never save customer-entered text/file URLs.
-  const openingPending = orders.filter(order => pendingIds.has(order.id)).map(order => ({
-    ...order, items: order.items.map(line => ({ ...line,
-      selectedOptions: canonicalVariationOptions(line.selectedOptions)
-        ?? [{ name: 'Unsupported selection', value: 'Redacted', type: 'REDACTED' }]
-    }))
-  }));
+  const openingPending = await Promise.all(orders.filter(order => pendingIds.has(order.id)).map(order=>sanitizedOpeningOrder(order,targets)));
   const openingOrders = {
-    kind: 'READONLY_ORDERS' as const, schema_version: 1 as const, dry_run: true as const, complete: true as const,
+    kind: 'READONLY_ORDERS' as const, schema_version: 2 as const, dry_run: true as const, complete: true as const,
     store_id: credentials.storeId, started_at: started.toISOString(), completed_at: completedAt,
     creation_cutoff: Math.floor(started.getTime() / 1000), orders_checked: orders.length,
     pending_order_count: openingPending.length, line_count: openingPending.reduce((count, order) => count + order.items.length, 0),

@@ -1,8 +1,9 @@
 import { DomainError, TERMINAL_FULFILLMENT_STATUSES } from './domain';
 import { canonicalVariationOptions, EcwidClient, EcwidError, type EcwidFetch, type EcwidOrder, type EcwidProduct } from './ecwid';
 import type { OpeningOrdersSnapshot } from './opening-cutover';
-import { validateWorkbookTargets, workbookTargetId } from './pilot-scope';
+import { validateWorkbookTargets, workbookTargetId, type WorkbookTarget } from './pilot-scope';
 import { orderSnapshotHash } from './sync';
+import { workbookLineMatches } from './workbook-identity';
 
 export interface CutoverAlignmentRequest {
   operation_id: string;
@@ -38,6 +39,7 @@ interface Context {
   batch: Batch; rows: StockRow[]; snapshot: OpeningOrdersSnapshot;
   orders: OrderIdentity[]; lines: LineIdentity[]; now: () => string;
   policy: CutoverAlignmentPolicy; fetcher?: EcwidFetch;
+  workbook: WorkbookTarget[];
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[a-f0-9]{64}$/;
@@ -62,9 +64,9 @@ function client(context: Context): EcwidClient {
   return new EcwidClient({ storeId: context.policy.storeId, token: context.policy.token }, context.fetcher,
     Math.max(1, Math.min(15_000, remainingLease(context))));
 }
-async function orderIdentity(order: EcwidOrder): Promise<OrderIdentity> {
+async function orderIdentity(order: EcwidOrder,workbookTargets:WorkbookTarget[]=[],allowSnapshotEvidence=false): Promise<OrderIdentity> {
   return { id: order.id, payment: order.paymentStatus, fulfillment: order.fulfillmentStatus,
-    updated: order.updatedAt, hash: await orderSnapshotHash(order), lines: order.items.length };
+    updated: order.updatedAt, hash: await orderSnapshotHash(order,{allowSnapshotEvidence,workbookTargets}), lines: order.items.length };
 }
 function stockKey(sku: string, product: string, combination: string | null, signature: string): string {
   return JSON.stringify([sku, product, combination, signature]);
@@ -107,17 +109,18 @@ async function loadContext(db: D1Database, value: unknown, policy: CutoverAlignm
     || utc(snapshot.completed_at) > utc(now())) fail('CUTOVER_AUDIT_INVALID', 'The immutable staged cutover evidence is inconsistent.');
   const rowsByIdentity = new Map(rows.map(row => [stockKey(row.sku, row.ecwid_product_id, row.ecwid_combination_id, row.ecwid_option_signature), row]));
   const workbook = validateWorkbookTargets(JSON.parse(batch.workbook_scope_json));
-  const workbookByIdentity = new Map(workbook.map(row => [stockKey(row.sku, row.ecwid_product_id, row.ecwid_combination_id, row.ecwid_option_signature), row]));
-  const orders = (await Promise.all(snapshot.orders.map(orderIdentity))).sort((a, b) => a.id.localeCompare(b.id));
+  const orders = (await Promise.all(snapshot.orders.map(order=>orderIdentity(order,workbook,true)))).sort((a, b) => a.id.localeCompare(b.id));
   const lines = snapshot.orders.flatMap(order => order.items.map((line): LineIdentity => {
     const key = stockKey(line.sku, line.productId, line.combinationId, JSON.stringify(canonicalVariationOptions(line.selectedOptions)));
-    const item = rowsByIdentity.get(key), outside = workbookByIdentity.get(key);
+    const item = line.digital===false&&line.workbookOptionsEvidence===undefined?rowsByIdentity.get(key):undefined;
+    const external=workbook.filter(target=>workbookLineMatches(line,target,true));
+    const outside=external.length===1?external[0]:undefined;
     if (!item && !outside) fail('CUTOVER_AUDIT_INVALID', 'An opening order line no longer matches the immutable scope.');
     return { id: `${order.id}:${line.id}`, order_id: order.id, ecwid_line_id: line.id, sku: line.sku, quantity: line.quantity,
       item_id: item?.item_id ?? null, mode: item ? 'APP' : 'WORKBOOK', workbook_target_id: outside ? workbookTargetId(outside) : null };
   }));
   if (lines.length !== batch.line_count) fail('CUTOVER_AUDIT_INVALID', 'The staged order-line count does not match.');
-  return { batch, rows, snapshot, orders, lines, now, policy, fetcher: options.fetcher };
+  return { batch, rows, snapshot, orders, lines, now, policy, fetcher: options.fetcher,workbook };
 }
 
 // Used in both read checks and the final write transaction. A conditional state
@@ -196,7 +199,7 @@ async function assertLiveOrders(context: Context): Promise<number> {
       }
       if (pending(order)) {
         if (open.length >= 200 || utc(order.updatedAt) > utc(context.now())) fail('CUTOVER_ORDERS_CHANGED', 'Pending order evidence is inconsistent.');
-        open.push(await orderIdentity(order));
+        open.push(await orderIdentity(order,context.workbook));
       }
     }
     count += page.count;

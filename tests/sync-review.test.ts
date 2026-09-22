@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMovement } from '../src/inventory';
-import { pollOrders, processOutbox, processWebhook, pumpSync, upsertOrderSnapshot, type SyncEnv } from '../src/sync';
+import { pollHistoricalOrders as pollOrders, processOutbox, processWebhook, pumpSync, upsertOrderSnapshot, type SyncEnv } from '../src/sync';
 import type { EcwidOrder } from '../src/ecwid';
 import { applyMigrations } from './d1';
 

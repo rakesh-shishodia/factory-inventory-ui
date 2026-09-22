@@ -18,6 +18,8 @@ export interface EcwidOrderLine {
   selectedOptions: unknown[];
   digital: boolean;
   trackQuantity: boolean;
+  /** Read-only snapshot v2 only; live wire parsing never accepts this field. */
+  workbookOptionsEvidence?: { kind: 'OPAQUE_OPTIONS_V1'; sha256: string };
 }
 
 export interface EcwidOrder {
@@ -124,6 +126,9 @@ export function parseOrder(value: unknown): EcwidOrder {
     // Missing is Ecwid's legacy empty default; supplied malformed data must stop ingestion.
     if (line.selectedOptions !== undefined && !Array.isArray(line.selectedOptions)) {
       throw new Error('Invalid Ecwid selected options.');
+    }
+    if (line.digital !== undefined && typeof line.digital !== 'boolean') {
+      throw new Error('Invalid Ecwid digital flag.');
     }
     const combinationId = line.combinationId == null || line.combinationId === 0 || line.combinationId === '0'
       ? null : stockIdentifier(line.combinationId, 'variation ID');
@@ -337,8 +342,13 @@ export class EcwidClient {
     return parseOrder(await this.request(`/orders/${encodeURIComponent(id)}`));
   }
 
-  async listOrders(options: { offset?: number; createdTo?: number; updatedFrom?: number; updatedTo?: number } = {}): Promise<EcwidPage<EcwidOrder>> {
-    const query = new URLSearchParams({ limit: '100', offset: String(options.offset ?? 0) });
+  async listOrders(options: { limit?: number; offset?: number; createdTo?: number; updatedFrom?: number; updatedTo?: number } = {}): Promise<EcwidPage<EcwidOrder>> {
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100
+      || !Number.isSafeInteger(options.offset ?? 0) || (options.offset ?? 0) < 0) {
+      throw new EcwidError('Invalid order pagination bounds.', 'REJECTED');
+    }
+    const query = new URLSearchParams({ limit: String(limit), offset: String(options.offset ?? 0) });
     for (const key of ['createdTo', 'updatedFrom', 'updatedTo'] as const) {
       if (options[key] !== undefined) query.set(key, String(options[key]));
     }

@@ -2,8 +2,9 @@ import { DomainError, normalizeCode, PICKABLE_FULFILLMENT_STATUSES } from './dom
 import { canonicalVariationOptions, type EcwidOrder } from './ecwid';
 import { previewImport } from './opening-import';
 import { type OpeningStageScope } from './opening-apply';
-import { buildWorkbookTargetStatements, validateWorkbookTargets, workbookTargetId } from './pilot-scope';
+import { buildWorkbookTargetStatements, validateWorkbookTargets, workbookTargetId, type WorkbookTarget } from './pilot-scope';
 import { orderSnapshotHash } from './sync';
+import { opaqueWorkbookPolicy, validWorkbookEvidence, workbookLineMatches } from './workbook-identity';
 
 type Row = Record<string, unknown>;
 export interface OpeningCutoverPolicy { storeId: string; actor: string; now?: string }
@@ -11,7 +12,7 @@ export interface OpeningLineConfirmation {
   order_id: string; ecwid_line_id: string; previously_picked_quantity: 0;
 }
 export interface OpeningOrdersSnapshot {
-  kind: 'READONLY_ORDERS'; schema_version: 1; dry_run: true; complete: true; store_id: string;
+  kind: 'READONLY_ORDERS'; schema_version: 1 | 2; dry_run: true; complete: true; store_id: string;
   started_at: string; completed_at: string; creation_cutoff: number; orders_checked: number;
   pending_order_count: number; line_count: number; orders: EcwidOrder[];
 }
@@ -20,8 +21,7 @@ export interface OpeningCutoverRequest {
   freeze: { confirmed: true; started_at: string };
   input: Row; scope: OpeningStageScope[]; orders: OpeningOrdersSnapshot;
   line_confirmations: OpeningLineConfirmation[];
-  workbook_scope: Array<{ sku: string; name: string; ecwid_product_id: string;
-    ecwid_combination_id: string | null; ecwid_option_signature: string }>;
+  workbook_scope: WorkbookTarget[];
 }
 interface BatchRow {
   operation_id: string; fingerprint: string; store_id: string; review_hash: string;
@@ -66,8 +66,9 @@ const stockKey = (row: OpeningStageScope) => JSON.stringify([row.ecwid_product_i
 
 function parseOrders(value: unknown, storeId: string): { snapshot: Row; orders: EcwidOrder[]; lineCount: number } {
   const snapshot = object(value, 'Orders snapshot');
-  if (snapshot.kind !== 'READONLY_ORDERS' || snapshot.schema_version !== 1 || snapshot.dry_run !== true || snapshot.complete !== true || snapshot.store_id !== storeId) {
-    fail('INVALID_OPENING_ORDERS', 'Provide a complete version-1 READONLY_ORDERS snapshot for the configured store.');
+  if (snapshot.kind !== 'READONLY_ORDERS' || ![1,2].includes(Number(snapshot.schema_version)) || typeof snapshot.schema_version!=='number'
+    || snapshot.dry_run !== true || snapshot.complete !== true || snapshot.store_id !== storeId) {
+    fail('INVALID_OPENING_ORDERS', 'Provide a complete version-1 or version-2 READONLY_ORDERS snapshot for the configured store.');
   }
   const started = utc(snapshot.started_at, 'Order snapshot started_at');
   const completed = utc(snapshot.completed_at, 'Order snapshot completed_at');
@@ -96,14 +97,18 @@ function parseOrders(value: unknown, storeId: string): { snapshot: Row; orders: 
         const sku = string(line.sku, 'Order line SKU');
         const name = string(line.name, 'Order line name', 500);
         const options = canonicalVariationOptions(line.selectedOptions);
+        if(line.workbookOptionsEvidence!==undefined&&(snapshot.schema_version!==2||!validWorkbookEvidence(line.workbookOptionsEvidence))) {
+          fail('INVALID_OPENING_ORDER_LINE','Opaque workbook option evidence requires the explicit version-2 schema and a valid bounded fingerprint.');
+        }
         if (!ID.test(lineId) || !ID.test(productId) || seenLines.has(lineId) || sku !== normalizeCode(sku) || sku.includes('|')
           || (line.combinationId !== null && (typeof line.combinationId !== 'string' || !ID.test(line.combinationId)))
-          || options === null || line.digital !== false || typeof line.trackQuantity !== 'boolean') {
-          fail('INVALID_OPENING_ORDER_LINE', 'Each opening line needs an exact SKU/product/variation, supported option identity, unique line ID and explicit non-digital evidence.');
+          || options === null || typeof line.digital !== 'boolean' || typeof line.trackQuantity !== 'boolean') {
+          fail('INVALID_OPENING_ORDER_LINE', 'Each opening line needs an exact SKU/product/variation, supported option identity, unique line ID and explicit boolean digital evidence.');
         }
         seenLines.add(lineId);
         return { id: lineId, productId, sku, name, quantity: integer(line.quantity, 'Order quantity', 1),
-          combinationId: line.combinationId as string | null, selectedOptions: options, digital: false, trackQuantity: line.trackQuantity };
+          combinationId: line.combinationId as string | null, selectedOptions: options, digital: line.digital, trackQuantity: line.trackQuantity,
+          ...(line.workbookOptionsEvidence!==undefined?{workbookOptionsEvidence:line.workbookOptionsEvidence as NonNullable<EcwidOrder['items'][number]['workbookOptionsEvidence']>}:{}) };
       }) };
   });
   if (snapshot.line_count !== lineCount) fail('INVALID_OPENING_ORDERS', 'Explicit snapshot line_count must match every pending order line.');
@@ -145,14 +150,19 @@ async function prepare(value: unknown, policy: OpeningCutoverPolicy) {
     fail('OPENING_SCOPE_CONFLICT', 'A target cannot be both workbook-managed and app-managed.');
   }
   const catalogueTargets = array(catalog.stock_targets, 'Catalogue stock targets', 20000);
+  const catalogueParents = array(catalog.products,'Catalogue products',10000);
   for (const target of workbookScope) {
     const exact = catalogueTargets.filter(row => String(row.id) === target.ecwid_product_id
       && row.combinationId === target.ecwid_combination_id);
     const skuMatches = catalogueTargets.filter(row => typeof row.sku === 'string' && normalizeCode(row.sku) === target.sku
       && !(row.combinationId === null && row.hasVariations === true));
-    if (exact.length !== 1 || skuMatches.length !== 1 || exact[0] !== skuMatches[0]
-      || typeof exact[0].sku !== 'string' || normalizeCode(exact[0].sku) !== target.sku
-      || JSON.stringify(canonicalVariationOptions(exact[0].variationOptions)) !== target.ecwid_option_signature) {
+    const parents=catalogueParents.filter(parent=>String(parent.id)===target.ecwid_product_id);
+    const skuMatched=target.sku_source==='PARENT_IF_VARIATION_BLANK'&&opaqueWorkbookPolicy(target)
+      ? exact.length===1&&typeof exact[0].sku==='string'&&exact[0].sku.trim()===''&&parents.length===1
+        &&typeof parents[0].sku==='string'&&normalizeCode(parents[0].sku)===target.sku&&parents[0].hasVariations===true
+      : exact.length===1&&skuMatches.length===1&&exact[0]===skuMatches[0]
+        &&typeof exact[0].sku==='string'&&normalizeCode(exact[0].sku)===target.sku;
+    if (!skuMatched || JSON.stringify(canonicalVariationOptions(exact[0]?.variationOptions)) !== target.ecwid_option_signature) {
       fail('OPENING_WORKBOOK_CATALOGUE_MISMATCH', 'Every workbook-managed identity must match one unambiguous target in the complete catalogue. Units and stock policy remain outside the app.', 409);
     }
   }
@@ -168,12 +178,15 @@ async function prepare(value: unknown, policy: OpeningCutoverPolicy) {
   const confirmationKeys = confirmations.map(line => `${line.order_id}:${line.ecwid_line_id}`).sort();
   if (JSON.stringify(lineKeys) !== JSON.stringify(confirmationKeys)) fail('OPENING_LINE_CONFIRMATIONS_MISMATCH', 'Confirm each complete opening order line exactly once.', 409);
   const pilotByIdentity = new Map(scope.map(row => [identity(row), row]));
-  const workbookByIdentity = new Map(workbookScope.map(row => [identity(row), row]));
   const reservations = new Map(scope.map(row => [row.sku, 0]));
   const lines = orders.flatMap(order => order.items.map(line => {
     const target = { sku: line.sku, ecwid_product_id: line.productId, ecwid_combination_id: line.combinationId,
       ecwid_option_signature: JSON.stringify(canonicalVariationOptions(line.selectedOptions)) };
-    const pilot = pilotByIdentity.get(identity(target)); const workbook = workbookByIdentity.get(identity(target));
+    // Opaque extras are never an APP eligibility shortcut, even when a caller
+    // supplies a stock subset that would otherwise match the pilot identity.
+    const pilot = line.digital===false&&line.workbookOptionsEvidence===undefined?pilotByIdentity.get(identity(target)):undefined;
+    const outside=workbookScope.filter(target=>workbookLineMatches(line,target,true));
+    const workbook=outside.length===1?outside[0]:undefined;
     if (!pilot && !workbook) fail('OPENING_ORDER_LINE_UNMAPPED', 'An opening order line is not an exact approved pilot target or explicitly workbook-managed target. Reconcile all lines first.', 409);
     if (pilot) {
       const quantity = reservations.get(pilot.sku)! + line.quantity;
@@ -251,7 +264,7 @@ export async function stageOpeningCutover(db: D1Database, value: unknown, policy
   const rowsJson = JSON.stringify(rows);
   const ordersJson = JSON.stringify(await Promise.all(p.orders.map(async order => ({ id: order.id,
     payment_status: order.paymentStatus, fulfillment_status: order.fulfillmentStatus, remote_updated_at: order.updatedAt,
-    remote_lines_hash: await orderSnapshotHash(order), line_count: order.items.length }))));
+    remote_lines_hash: await orderSnapshotHash(order,{allowSnapshotEvidence:true,workbookTargets:p.workbookScope}), line_count: order.items.length }))));
   if ([rowsJson, linesJson, ordersJson].some(text => new TextEncoder().encode(text).byteLength > 1_500_000)) {
     fail('OPENING_CUTOVER_TOO_LARGE', 'Opening payload exceeds the bounded transaction size.', 413);
   }

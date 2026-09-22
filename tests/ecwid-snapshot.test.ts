@@ -198,7 +198,7 @@ describe('full snapshot assembly', () => {
     expect(snapshot.catalogue).toMatchObject({ dry_run: true, complete: true, product_count: 1, stock_target_count: 1, reservations_confirmed: false });
     expect(snapshot.catalogue.stock_targets[0]).toMatchObject({ combinationId: '501', quantity: 7, sku: '0008' });
     expect(snapshot.orderReview).toMatchObject({ orders_checked: 1, pending_order_count: 1, reservations_confirmed: false });
-    expect(snapshot.openingOrders).toMatchObject({ kind: 'READONLY_ORDERS', schema_version: 1, dry_run: true, complete: true,
+    expect(snapshot.openingOrders).toMatchObject({ kind: 'READONLY_ORDERS', schema_version: 2, dry_run: true, complete: true,
       store_id: '2442119', orders_checked: 1, pending_order_count: 1, line_count: 1,
       orders: [{ id: 'ORDER', items: [{ id: '1', productId: '1001', combinationId: '501', digital: false,
         trackQuantity: true, selectedOptions: [{ name: 'Length', value: '20 mm' }] }] }] });

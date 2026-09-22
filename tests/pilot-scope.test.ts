@@ -96,13 +96,18 @@ describe('mixed app and workbook orders', () => {
     await upsertOrderSnapshot(db,order());
     expect(await upsertOrderSnapshot(db,{...order(2),fulfillmentStatus:'READY_FOR_PICKUP'})).toMatchObject({needs_review:true});
   });
-  it.each(['wrong-sku','wrong-parent','wrong-combination','wrong-options','digital','unknown'])('never exempts a %s line by absence from the app', async fault => {
+  it('keeps an exactly reviewed workbook line external even when Ecwid reports downloadable attachments',async()=>{
+    const input=order();input.items[1].digital=true;
+    expect(await upsertOrderSnapshot(db,input)).toMatchObject({needs_review:false});
+    expect((await getOrder(db,'ORDER')).lines.find(row=>row.id==='ORDER:wb')).toMatchObject({management_mode:'WORKBOOK',item_id:null,pickable_qty:0});
+  });
+  it.each(['wrong-sku','wrong-parent','wrong-combination','wrong-options','nonboolean-digital','unknown'])('never exempts a %s line by absence from the app', async fault => {
     const input = order(); const line = input.items[1];
     if (fault==='wrong-sku') line.sku='APP';
     if (fault==='wrong-parent') line.productId='100';
     if (fault==='wrong-combination') line.combinationId='99';
     if (fault==='wrong-options') line.selectedOptions=[{name:'Size',value:'M3'}];
-    if (fault==='digital') line.digital=true;
+    if (fault==='nonboolean-digital') Object.assign(line,{digital:'true'});
     if (fault==='unknown') {line.productId='300';line.sku='UNREVIEWED';}
     expect(await upsertOrderSnapshot(db,input)).toMatchObject({needs_review:true});
     expect((await getOrder(db,'ORDER')).lines.find(row=>row.id==='ORDER:wb')).toMatchObject({management_mode:'APP',item_id:null,fulfillment_state:'REVIEW'});

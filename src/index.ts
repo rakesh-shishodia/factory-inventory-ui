@@ -94,7 +94,7 @@ async function routes(request: Request, env: Env, ctx: ExecutionContext): Promis
         ORDER BY o.created_at DESC LIMIT 100`),
       env.DB.prepare("SELECT * FROM sync_issues WHERE status='OPEN' ORDER BY created_at DESC LIMIT 100"),
       env.DB.prepare('SELECT status,COUNT(*) AS count FROM webhook_events GROUP BY status'),
-      env.DB.prepare("SELECT key,value,updated_at FROM sync_state WHERE key IN ('orders_last_full_poll','orders_poll_cursor','orders_tracking_started')")
+      env.DB.prepare("SELECT key,value,updated_at FROM sync_state WHERE key IN ('orders_last_full_poll','orders_tracking_started','orders_recent_watermark','orders_recent_last_success','orders_recent_status','orders_recent_error')")
     ]);
     return json({ outbox: outbox.results, issues: issues.results, inbox_counts: inboxCounts.results, sync_state: syncState.results });
   }

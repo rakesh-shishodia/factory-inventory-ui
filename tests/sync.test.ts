@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EcwidClient, parseOrder, parseWebhook, verifyWebhookSignature, type EcwidOrder } from '../src/ecwid';
-import { claimOutbox, ingestWebhook, pollOrders, processOutbox, recoverStaleProcessing, upsertOrderSnapshot, type SyncEnv } from '../src/sync';
+import { claimOutbox, ingestWebhook, pollHistoricalOrders as pollOrders, processOutbox, recoverStaleProcessing, upsertOrderSnapshot, type SyncEnv } from '../src/sync';
 import { createMovement } from '../src/inventory';
 import { applyMigrations } from './d1';
 

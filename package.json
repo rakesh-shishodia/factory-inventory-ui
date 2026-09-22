@@ -20,6 +20,8 @@
     "ecwid:check": "node --import tsx scripts/ecwid-readonly.ts",
     "ecwid:snapshot": "node --import tsx scripts/ecwid-snapshot.ts",
     "ecwid:categories": "node --import tsx scripts/ecwid-category-snapshot.ts",
+    "cutover:prepare": "node --import tsx scripts/prepare-cutover-request.ts",
+    "cutover:operate": "node --import tsx scripts/cutover-operator.ts",
     "import:catalogue": "python3 scripts/review-ecwid-catalogue.py",
     "test:catalogue": "python3 -m unittest discover -s tests -p 'test_ecwid_catalogue.py'",
     "test:extractor": "python3 -m unittest discover -s tests -p 'test_stock_workbook.py'"

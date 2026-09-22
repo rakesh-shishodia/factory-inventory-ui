@@ -33,7 +33,8 @@
   }],
   "queues": {
     "producers": [{ "binding": "SYNC_QUEUE", "queue": "factory-inventory-sync" }],
-    "consumers": [{ "queue": "factory-inventory-sync", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 3 }]
+    // Keep one message per invocation within the Free-plan D1/subrequest budget.
+    "consumers": [{ "queue": "factory-inventory-sync", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 3 }]
   },
   "triggers": { "crons": ["*/5 * * * *"] }
 }
