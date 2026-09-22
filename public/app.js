@@ -288,23 +288,26 @@ function updateReason() {
 
 function updateEnabled() {
   const locked = state.loading || state.lookingUp || state.orderLookingUp || state.submitting || !!state.pending || !navigator.onLine
-    || !state.session || state.session.inventory_enabled === false;
+    || !state.session;
+  const recordingPaused = state.session?.inventory_enabled === false;
   const itemReady = operationalItem(state.item);
   const config = reasonConfig();
   const orderReady = $('#reason')?.value !== 'ECWID_PICK' || !!state.orderSelection;
   const noteReady = !config.noteRequired || !!$('#notes')?.value.trim();
+  // Camera and SKU lookup stay available during a safe production preview;
+  // every control that can lead to a write remains disabled while paused.
   $('#open-scanner').disabled = locked;
   $('#sku').disabled = locked;
   $('#fetch-item').disabled = locked || !$('#sku').value.trim();
-  $('#quantity').disabled = locked;
-  $('#quantity-minus').disabled = locked;
-  $('#quantity-plus').disabled = locked;
-  $('#reason').disabled = locked;
-  $('#order-id').disabled = locked || !itemReady;
-  $('#fetch-order').disabled = locked || !itemReady || !$('#order-id').value.trim();
-  $('#notes').disabled = locked;
-  $('#submit-movement').disabled = locked || !itemReady || !orderReady || !noteReady;
-  $('#retry-pending').disabled = state.submitting || !navigator.onLine;
+  $('#quantity').disabled = locked || recordingPaused;
+  $('#quantity-minus').disabled = locked || recordingPaused;
+  $('#quantity-plus').disabled = locked || recordingPaused;
+  $('#reason').disabled = locked || recordingPaused;
+  $('#order-id').disabled = locked || recordingPaused || !itemReady;
+  $('#fetch-order').disabled = locked || recordingPaused || !itemReady || !$('#order-id').value.trim();
+  $('#notes').disabled = locked || recordingPaused;
+  $('#submit-movement').disabled = locked || recordingPaused || !itemReady || !orderReady || !noteReady;
+  $('#retry-pending').disabled = state.submitting || !navigator.onLine || recordingPaused;
 }
 
 async function lookupItem() {

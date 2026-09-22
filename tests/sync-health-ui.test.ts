@@ -27,6 +27,13 @@ describe('reduced worker-facing UI', () => {
     expect(app).toContain("api('/api/session')");
   });
 
+  it('allows camera and SKU checks while paused but keeps all write controls disabled', () => {
+    expect(app).toContain("$('#open-scanner').disabled = locked;");
+    expect(app).toContain("$('#fetch-item').disabled = locked || !$('#sku').value.trim();");
+    expect(app).toContain("$('#submit-movement').disabled = locked || recordingPaused");
+    expect(app).toContain("$('#fetch-order').disabled = locked || recordingPaused");
+  });
+
   it('refreshes one manually entered order instead of relying on a background order list', () => {
     expect(app).toContain("api(`/api/orders/${encodeURIComponent(raw)}/refresh`, { method: 'POST' })");
     expect(app).not.toContain("api('/api/orders?status=PAID')");
