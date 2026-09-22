@@ -1,0 +1,36 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "factory-inventory-supplier-demo",
+  "main": "../../src/index.ts",
+  "compatibility_date": "2026-09-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "../../public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api", "/api/*"]
+  },
+  "observability": { "enabled": true },
+  "vars": {
+    "ECWID_MODE": "demo",
+    "LIVE_SYNC_ENABLED": "false",
+    "INVENTORY_ENABLED": "false",
+    "ECWID_STORE_ID": "",
+    "ECWID_TOKEN": "",
+    "ECWID_CLIENT_SECRET": "",
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": "",
+    "ADMIN_EMAILS": ""
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "inventory-supplier-demo",
+    "database_id": "00000000-0000-0000-0000-000000000002",
+    "migrations_dir": "../../migrations"
+  }],
+  "queues": {
+    "producers": [{ "binding": "SYNC_QUEUE", "queue": "inventory-supplier-demo" }],
+    "consumers": [{ "queue": "inventory-supplier-demo", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 3 }]
+  }
+}

@@ -1,0 +1,4 @@
+# Set real values through wrangler secret put for a live deployment.
+# Local demo does not need credentials.
+ECWID_TOKEN=""
+ECWID_CLIENT_SECRET=""

@@ -1,0 +1,13 @@
+node_modules/
+.wrangler/
+dist/
+coverage/
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
+public/vendor/
+import-data/
+test-results/
+__pycache__/
+.DS_Store

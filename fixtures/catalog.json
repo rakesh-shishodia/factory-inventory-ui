@@ -1,0 +1,4 @@
+[
+  { "id": "10001", "sku": "NUT-M3", "name": "M3 hex nut", "quantity": 188, "unlimited": false, "hasOptions": false, "hasVariations": false, "combinationId": null, "variationOptions": [], "enabled": true, "eligibilityVerified": true, "hasExtraOptions": false, "hasBundleRelationships": false },
+  { "id": "10002", "sku": "BOLT-M3-12", "name": "M3 x 12 socket head bolt", "quantity": 147, "unlimited": false, "hasOptions": false, "hasVariations": false, "combinationId": null, "variationOptions": [], "enabled": true, "eligibilityVerified": true, "hasExtraOptions": false, "hasBundleRelationships": false }
+]

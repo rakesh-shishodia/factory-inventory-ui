@@ -1,0 +1,41 @@
+{
+  "name": "factory-inventory",
+  "version": "0.1.0",
+  "private": true,
+  "engines": { "node": ">=22.0.0" },
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --ip 127.0.0.1 --port 8787",
+    "types": "wrangler types --include-runtime false --strict-vars false",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node scripts/vendor.mjs && wrangler deploy --dry-run --outdir dist",
+    "db:migrate": "wrangler d1 migrations apply inventory-local --local",
+    "setup:demo": "npm run db:migrate && wrangler d1 execute inventory-local --local --file fixtures/demo.sql && node scripts/vendor.mjs",
+    "setup:variation-demo": "npm run db:migrate && wrangler d1 execute inventory-local --local --file fixtures/variation-demo.sql && node scripts/vendor.mjs",
+    "setup:supplier-demo": "wrangler d1 migrations apply inventory-supplier-demo --config fixtures/supplier-demo/wrangler.jsonc --local --persist-to .wrangler/supplier-demo-v2 && wrangler d1 execute inventory-supplier-demo --config fixtures/supplier-demo/wrangler.jsonc --local --persist-to .wrangler/supplier-demo-v2 --file fixtures/supplier-demo.sql && node scripts/vendor.mjs",
+    "dev:supplier-demo": "wrangler dev --config fixtures/supplier-demo/wrangler.jsonc --local --ip 127.0.0.1 --port 8793 --inspector-port 9243 --persist-to .wrangler/supplier-demo-v2",
+    "import:preview": "tsx scripts/preview-import.ts",
+    "import:source": "node --import tsx scripts/review-stock-workbook.ts",
+    "ecwid:check": "node --import tsx scripts/ecwid-readonly.ts",
+    "ecwid:snapshot": "node --import tsx scripts/ecwid-snapshot.ts",
+    "ecwid:categories": "node --import tsx scripts/ecwid-category-snapshot.ts",
+    "import:catalogue": "python3 scripts/review-ecwid-catalogue.py",
+    "test:catalogue": "python3 -m unittest discover -s tests -p 'test_ecwid_catalogue.py'",
+    "test:extractor": "python3 -m unittest discover -s tests -p 'test_stock_workbook.py'"
+  },
+  "dependencies": {
+    "html5-qrcode": "^2.3.8",
+    "jose": "^6.2.12"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260922.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.2",
+    "better-sqlite3": "^13.0.3",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1",
+    "wrangler": "^4.136.1"
+  }
+}

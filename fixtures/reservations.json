@@ -1,0 +1,9 @@
+{
+  "source_ref": "DEMO stock export; replace with the actual stock sheet reference and export timestamp",
+  "balance_meaning": "PHYSICAL_ON_HAND",
+  "reservations_confirmed": true,
+  "reservations": [
+    { "sku": "NUT-M3", "quantity": 12 },
+    { "sku": "BOLT-M3-12", "quantity": 13 }
+  ]
+}
