@@ -1,8 +1,10 @@
 /** Only this adapter knows Ecwid's wire format. It never automatically retries a write. */
 export type EcwidFailure = 'UNKNOWN' | 'REJECTED' | 'RETRYABLE';
+export type EcwidFailureStage = 'UNSPECIFIED' | 'FETCH' | 'RESPONSE_BODY';
 
 export class EcwidError extends Error {
-  constructor(message: string, public outcome: EcwidFailure, public status?: number, public retryAfter = 60) {
+  constructor(message: string, public outcome: EcwidFailure, public status?: number, public retryAfter = 60,
+    public stage: EcwidFailureStage = 'UNSPECIFIED') {
     super(message);
     this.name = 'EcwidError';
   }
@@ -307,13 +309,24 @@ export class EcwidClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetcher(`${this.base}${path}`, {
-        method,
-        headers: { Authorization: `Bearer ${this.credentials.token}`, 'Content-Type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: controller.signal,
-        redirect: 'error',
-      });
+      let response: Response;
+      try {
+        // Calling the Workers runtime's native fetch through `this.fetcher(...)`
+        // supplies EcwidClient as its receiver and workerd rejects that as an
+        // illegal invocation. Detach it first so native fetch receives no receiver.
+        const fetcher = this.fetcher;
+        response = await fetcher(`${this.base}${path}`, {
+          method,
+          headers: { Authorization: `Bearer ${this.credentials.token}`, 'Content-Type': 'application/json' },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: controller.signal,
+          redirect: 'error',
+        });
+      } catch {
+        throw new EcwidError(isWrite
+          ? 'Ecwid write outcome is uncertain. Verify it manually before any retry.'
+          : 'Could not connect to Ecwid.', isWrite ? 'UNKNOWN' : 'RETRYABLE', undefined, 60, 'FETCH');
+      }
       if (response.status === 429) {
         // Ecwid documents rate-limited requests as ignored; these alone can safely retry.
         const after = Number(response.headers.get('Retry-After'));
@@ -327,7 +340,14 @@ export class EcwidClient {
         throw new EcwidError(`Ecwid returned HTTP ${response.status}.`,
           definiteRejection ? 'REJECTED' : isWrite ? 'UNKNOWN' : 'RETRYABLE', response.status);
       }
-      return await readBoundedJson(response);
+      try {
+        return await readBoundedJson(response);
+      } catch {
+        throw new EcwidError(isWrite
+          ? 'Ecwid write response could not be verified. Verify it manually before any retry.'
+          : 'Could not read a valid response from Ecwid.', isWrite ? 'UNKNOWN' : 'RETRYABLE',
+        response.status, 60, 'RESPONSE_BODY');
+      }
     } catch (error) {
       if (error instanceof EcwidError) throw error;
       throw new EcwidError(isWrite

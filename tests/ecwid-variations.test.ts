@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { canonicalVariationOptions, EcwidClient, flattenProduct, parseOrder, productStockTargets } from '../src/ecwid';
+import { canonicalVariationOptions, EcwidClient, flattenProduct, parseOrder, productStockTargets,
+  type EcwidFetch } from '../src/ecwid';
 
 function product(overrides: Record<string, unknown> = {}) {
   return {
@@ -134,6 +135,15 @@ describe('canonical option identity', () => {
 });
 
 describe('Ecwid variation transport', () => {
+  it('invokes a runtime fetch without binding EcwidClient as its receiver', async () => {
+    const fetcher = function(this: unknown): Promise<Response> {
+      if (this !== undefined) throw new TypeError('Illegal invocation');
+      return Promise.resolve(Response.json(product()));
+    } as EcwidFetch;
+    await expect(new EcwidClient({ storeId: '123', token: 'test' }, fetcher).getProductStock('1001', '502'))
+      .resolves.toMatchObject({ combinationId: '502', quantity: 9 });
+  });
+
   it('lists parent products with full normalized variation and safety metadata', async () => {
     const fetcher = vi.fn().mockResolvedValue(Response.json({ total: 1, offset: 0, items: [product()] }));
     const result = await new EcwidClient({ storeId: '123', token: 'test' }, fetcher).listProducts();

@@ -177,7 +177,17 @@ export default {
     try { return await routes(request, env, ctx); }
     catch (error) {
       if (error instanceof DomainError) return json({ error: error.message, code: error.code }, error.status);
-      if (error instanceof EcwidError) return json({ error: 'Ecwid could not confirm the latest store information. Please try again.', code: 'ECWID_UNAVAILABLE' }, 503);
+      if (error instanceof EcwidError) {
+        // Never log credentials, request headers, response bodies or customer data.
+        // The bounded outcome/status are enough to distinguish an Ecwid rejection
+        // from an uncertain network/response failure during a live incident.
+        const requestPath = new URL(request.url).pathname;
+        const operation = requestPath === '/api/items/lookup' ? 'item_lookup'
+          : requestPath === '/api/movements' ? 'movement' : requestPath === '/api/orders/poll' ? 'orders_poll' : 'other';
+        console.error(JSON.stringify({ event: 'ecwid_request_failed', operation,
+          outcome: error.outcome, status: error.status ?? null, stage: error.stage }));
+        return json({ error: 'Ecwid could not confirm the latest store information. Please try again.', code: 'ECWID_UNAVAILABLE' }, 503);
+      }
       console.error(JSON.stringify({ event: 'request_failed', path: new URL(request.url).pathname,
         message: error instanceof Error ? error.message : 'Unknown error' }));
       return json({ error: 'The request could not be completed. If you submitted stock, retry the same operation.', code: 'INTERNAL_ERROR' }, 500);
