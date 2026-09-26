@@ -39,6 +39,22 @@ describe('Ecwid variation stock normalization', () => {
     expect(productStockTargets(simple)).toEqual([simple]);
   });
 
+  it('keeps a safe small thumbnail for a product and its exact variation', () => {
+    const parentImage = 'https://images.example.test/product-160.jpg';
+    const variationImage = 'https://images.example.test/variation-160.jpg';
+    const [parent, variation] = flattenProduct(product({
+      smallThumbnailUrl: parentImage,
+      thumbnailUrl: 'https://images.example.test/product-400.jpg',
+      combinations: [
+        { id: 501, sku: '0008', quantity: 8, unlimited: false,
+          smallThumbnailUrl: variationImage, options: [{ name: 'Length', value: '20 mm' }] },
+      ],
+    }));
+    expect(parent.thumbnailUrl).toBe(parentImage);
+    expect(variation.thumbnailUrl).toBe(variationImage);
+    expect(flattenProduct(product({ smallThumbnailUrl: 'javascript:alert(1)' }))[0].thumbnailUrl).toBeNull();
+  });
+
   it('never inherits parent stock or SKU into an untracked variation', () => {
     const raw = product({ combinations: [{ id: 501, options: [{ name: 'Length', value: '20 mm' }] }] });
     const [, variation] = flattenProduct(raw);
@@ -151,7 +167,8 @@ describe('Ecwid variation transport', () => {
     expect(result.items[0].variations).toHaveLength(2);
     const url = new URL(String(fetcher.mock.calls[0][0]));
     expect(url.searchParams.get('responseFields')).toContain('options(name,type,choices(text))');
-    expect(url.searchParams.get('responseFields')).toContain('combinations(id,sku,quantity,unlimited,options(name,value),compositeParents,compositeComponents)');
+    expect(url.searchParams.get('responseFields')).toContain('combinations(id,sku,thumbnailUrl,smallThumbnailUrl,quantity,unlimited,options(name,value),compositeParents,compositeComponents)');
+    expect(url.searchParams.get('responseFields')).toContain('name,thumbnailUrl,smallThumbnailUrl,quantity');
     expect(url.searchParams.get('responseFields')).not.toContain('imageUrl');
     expect(fetcher.mock.calls[0][1]).toMatchObject({ method: 'GET', redirect: 'manual' });
   });

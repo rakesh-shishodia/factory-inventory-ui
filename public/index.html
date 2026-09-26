@@ -31,12 +31,6 @@
   </header>
 
   <main class="worker-shell">
-    <div class="intro">
-      <p class="eyebrow">STOCK MOVEMENT</p>
-      <h1>Scan. Check. Submit.</h1>
-      <p>Record one item at a time.</p>
-    </div>
-
     <div id="global-error" class="banner banner-danger" role="alert" hidden></div>
     <div id="paused-banner" class="banner banner-warning" role="alert" hidden>
       Stock recording is paused. Please ask an administrator before moving stock.
@@ -57,44 +51,48 @@
 
       <label class="field-label" for="sku">Item SKU</label>
       <div class="lookup-row">
-        <input id="sku" class="text-input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="250" placeholder="Enter exact SKU">
+        <input id="sku" class="text-input sku-input" type="text" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="250" placeholder="Enter exact SKU">
         <button id="fetch-item" class="button button-secondary" type="button">Fetch</button>
       </div>
 
       <section id="item-result" class="item-result" aria-live="polite" hidden>
         <div class="item-heading">
-          <div><span id="item-sku" class="item-sku"></span><h2 id="item-name"></h2></div>
+          <div class="item-identity">
+            <img id="item-thumbnail" class="item-thumbnail" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" hidden>
+            <div class="item-copy"><span id="item-sku" class="item-sku"></span><h2 id="item-name"></h2></div>
+          </div>
           <svg class="icon item-check"><use href="#i-check"/></svg>
         </div>
         <dl class="stock-grid">
           <div><dt>Location</dt><dd id="item-location">—</dd></div>
-          <div><dt>On shelf</dt><dd id="item-on-hand">—</dd></div>
+          <div><dt>Shelf</dt><dd id="item-on-hand">—</dd></div>
           <div><dt>Available</dt><dd id="item-available">—</dd></div>
-          <div><dt>Available online</dt><dd id="item-ecwid">—</dd></div>
+          <div><dt>Ecwid stock</dt><dd id="item-ecwid">—</dd></div>
         </dl>
-        <p id="item-stock-checked" class="stock-checked"></p>
       </section>
 
-      <div class="field-block">
-        <label class="field-label" for="quantity">Quantity</label>
-        <div class="quantity-stepper">
-          <button id="quantity-minus" type="button" aria-label="Decrease quantity"><svg class="icon"><use href="#i-minus"/></svg></button>
-          <input id="quantity" type="number" min="1" step="1" inputmode="numeric" value="1" aria-describedby="quantity-help">
-          <button id="quantity-plus" type="button" aria-label="Increase quantity"><svg class="icon"><use href="#i-plus"/></svg></button>
+      <div class="field-pair">
+        <div class="field-block">
+          <label class="field-label" for="quantity">Quantity</label>
+          <div class="quantity-stepper">
+            <button id="quantity-minus" type="button" aria-label="Decrease quantity"><svg class="icon"><use href="#i-minus"/></svg></button>
+            <input id="quantity" type="number" min="1" step="1" inputmode="numeric" value="1" aria-describedby="quantity-help">
+            <button id="quantity-plus" type="button" aria-label="Increase quantity"><svg class="icon"><use href="#i-plus"/></svg></button>
+          </div>
+          <p id="quantity-help" class="field-help">Enter a positive whole number.</p>
         </div>
-        <p id="quantity-help" class="field-help">Enter a positive whole number.</p>
-      </div>
 
-      <div class="field-block">
-        <label class="field-label" for="reason">Reason</label>
-        <select id="reason" class="select-input">
-          <option value="ECWID_PICK">Ecwid Order Pick (−)</option>
-          <option value="EMAIL_SALE">Email Sale (−)</option>
-          <option value="INTERNAL_USE">Internal Use (−)</option>
-          <option value="RESTOCK">Restock (+)</option>
-          <option value="ADJUST_UP">Adjust Up (+)</option>
-          <option value="ADJUST_DOWN">Adjust Down (−)</option>
-        </select>
+        <div class="field-block">
+          <label class="field-label" for="reason">Reason</label>
+          <select id="reason" class="select-input">
+            <option value="ECWID_PICK">Ecwid Order Pick (−)</option>
+            <option value="EMAIL_SALE">Email Sale (−)</option>
+            <option value="INTERNAL_USE">Internal Use (−)</option>
+            <option value="RESTOCK">Restock (+)</option>
+            <option value="ADJUST_UP">Adjust Up (+)</option>
+            <option value="ADJUST_DOWN">Adjust Down (−)</option>
+          </select>
+        </div>
       </div>
 
       <div id="order-field" class="field-block" hidden>
@@ -109,7 +107,7 @@
 
       <div class="field-block">
         <label id="notes-label" class="field-label" for="notes">Notes <span>(optional)</span></label>
-        <textarea id="notes" class="text-area" rows="3" maxlength="900" placeholder="Invoice, workbench, delivery, or other detail"></textarea>
+        <textarea id="notes" class="text-area" rows="2" maxlength="900" placeholder="Invoice, workbench, delivery, or other detail"></textarea>
         <p id="notes-help" class="field-help" hidden>A reason is required for stock adjustments.</p>
       </div>
 

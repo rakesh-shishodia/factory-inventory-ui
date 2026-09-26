@@ -21,7 +21,7 @@ function itemCode(raw: string): { sku: string; combinationId: string | null } {
 
 async function currentEcwidStock(env: Env, item: Awaited<ReturnType<typeof getItem>>) {
   if (env.ECWID_MODE !== 'live') {
-    return { quantity: item.last_ecwid_quantity, unlimited: false, checked_at: null };
+    return { quantity: item.last_ecwid_quantity, unlimited: false, checked_at: null, thumbnail_url: null };
   }
   if (!item.ecwid_product_id) {
     throw new DomainError(409, 'ECWID_MAPPING_REQUIRED', 'This item is not mapped to an Ecwid stock record.');
@@ -32,7 +32,7 @@ async function currentEcwidStock(env: Env, item: Awaited<ReturnType<typeof getIt
     throw new DomainError(409, 'ECWID_MAPPING_CHANGED',
       'This Ecwid item no longer matches its approved stock mapping. Ask an administrator to review it.');
   }
-  return { quantity: target.quantity, unlimited: target.unlimited, checked_at: new Date().toISOString() };
+  return { quantity: target.quantity, unlimited: target.unlimited, checked_at: new Date().toISOString(), thumbnail_url: target.thumbnailUrl ?? null };
 }
 
 async function routes(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

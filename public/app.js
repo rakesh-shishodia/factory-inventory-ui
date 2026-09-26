@@ -101,14 +101,14 @@ async function api(path, options = {}) {
 function normalizeScan(raw) {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error('Scan an item or enter its SKU first.');
-  if (!trimmed.includes('|')) return trimmed;
+  if (!trimmed.includes('|')) return trimmed.toUpperCase();
   const parts = trimmed.split('|');
   if (parts.length > 3) throw new Error('This QR format is not supported. Enter the item SKU instead.');
   if (parts[1]?.trim() && !/^[1-9]\d{0,30}$/.test(parts[1].trim())) {
     throw new Error('This older QR does not identify the exact variation. Enter its unique SKU instead.');
   }
   if (!parts[0]?.trim()) throw new Error('The QR does not contain an item SKU.');
-  return trimmed;
+  return trimmed.toUpperCase();
 }
 
 function value(input) {
@@ -210,18 +210,23 @@ function renderItem() {
   if (!state.item) return;
   $('#item-sku').textContent = state.item.sku;
   $('#item-name').textContent = state.item.name;
+  const thumbnail = $('#item-thumbnail');
+  let thumbnailUrl = '';
+  try {
+    const candidate = new URL(state.ecwidStock?.thumbnail_url || '');
+    if (candidate.protocol === 'https:' && !candidate.username && !candidate.password) thumbnailUrl = candidate.href;
+  } catch { /* The photo is optional; stock details remain usable without it. */ }
+  thumbnail.onerror = () => { thumbnail.hidden = true; thumbnail.removeAttribute('src'); };
+  thumbnail.hidden = !thumbnailUrl;
+  thumbnail.alt = thumbnailUrl ? `${state.item.name} thumbnail` : '';
+  if (thumbnailUrl) thumbnail.src = thumbnailUrl;
+  else thumbnail.removeAttribute('src');
   $('#item-location').textContent = state.item.location || 'Not set';
   $('#item-on-hand').textContent = value(state.item.on_hand);
   $('#item-available').textContent = value(supplierItem(state.item) ? state.item.free : state.item.available);
   $('#item-ecwid').textContent = state.ecwidStock
     ? state.ecwidStock.unlimited ? 'Unlimited' : value(state.ecwidStock.quantity)
     : supplierItem(state.item) ? 'Unlimited' : value(state.item.last_ecwid_quantity);
-  const checked = $('#item-stock-checked');
-  if (checked) {
-    checked.textContent = state.ecwidStock?.checked_at
-      ? `Online stock checked ${new Intl.DateTimeFormat('en-IN', { hour: 'numeric', minute: '2-digit' }).format(new Date(state.ecwidStock.checked_at))}`
-      : 'Showing the latest recorded online stock.';
-  }
 }
 
 function clearItem() {
@@ -268,8 +273,8 @@ function updateQuantityLimit() {
   if (maximum === null) quantity.removeAttribute('max');
   else quantity.max = String(Math.max(0, maximum));
   $('#quantity-help').textContent = maximum === null
-    ? 'Enter a positive whole number.'
-    : `Maximum currently available: ${value(maximum)}.`;
+    ? 'Whole number'
+    : `Max: ${value(maximum)}`;
 }
 
 function updateReason() {
@@ -312,6 +317,7 @@ function updateEnabled() {
 
 async function lookupItem() {
   if (state.lookingUp || state.submitting || state.pending || !navigator.onLine) return;
+  $('#sku').value = $('#sku').value.toUpperCase();
   const raw = $('#sku').value;
   clearItem();
   const sequence = ++state.lookupSequence;
@@ -549,7 +555,7 @@ async function startCamera() {
         if (accepted || generation !== state.scannerGeneration || !dialog.open) return;
         accepted = true;
         await stopScanner(true);
-        $('#sku').value = decoded;
+        $('#sku').value = decoded.toUpperCase();
         clearItem();
         updateEnabled();
         await lookupItem();
@@ -633,7 +639,18 @@ $('#close-scanner').addEventListener('click', () => stopScanner(true));
 $('#switch-camera').addEventListener('click', switchCamera);
 $('#scanner-manual').addEventListener('click', async () => { await stopScanner(true); $('#sku').focus(); });
 $('#scanner-dialog').addEventListener('cancel', event => { event.preventDefault(); stopScanner(true); });
-$('#sku').addEventListener('input', () => { clearItem(); updateEnabled(); });
+$('#sku').addEventListener('input', () => {
+  const input = $('#sku');
+  const start = input.selectionStart;
+  const end = input.selectionEnd;
+  const uppercase = input.value.toUpperCase();
+  if (input.value !== uppercase) {
+    input.value = uppercase;
+    if (start !== null && end !== null) input.setSelectionRange(start, end);
+  }
+  clearItem();
+  updateEnabled();
+});
 $('#sku').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); lookupItem(); } });
 $('#fetch-item').addEventListener('click', lookupItem);
 $('#quantity-minus').addEventListener('click', () => stepQuantity(-1));

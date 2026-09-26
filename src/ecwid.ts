@@ -37,6 +37,7 @@ export interface EcwidProduct {
   id: string;
   sku: string;
   name: string;
+  thumbnailUrl?: string | null;
   quantity: number | null;
   unlimited: boolean;
   enabled: boolean;
@@ -156,8 +157,8 @@ export function parseOrder(value: unknown): EcwidOrder {
   };
 }
 
-// Nested projections retain inventory evidence without variant image/price payloads.
-const PRODUCT_FIELDS = 'id,sku,name,quantity,unlimited,enabled,options(name,type,choices(text)),combinations(id,sku,quantity,unlimited,options(name,value),compositeParents,compositeComponents),defaultCombinationId,compositeParents,compositeComponents';
+// Nested projections retain inventory evidence and the small catalog thumbnail.
+const PRODUCT_FIELDS = 'id,sku,name,thumbnailUrl,smallThumbnailUrl,quantity,unlimited,enabled,options(name,type,choices(text)),combinations(id,sku,thumbnailUrl,smallThumbnailUrl,quantity,unlimited,options(name,value),compositeParents,compositeComponents),defaultCombinationId,compositeParents,compositeComponents';
 export const ECWID_PRODUCT_LIST_FIELDS = `total,count,offset,items(${PRODUCT_FIELDS})`;
 export const ECWID_ORDER_LIST_FIELDS = 'total,count,offset,items(id,paymentStatus,fulfillmentStatus,createTimestamp,updateTimestamp,items(id,productId,sku,name,quantity,combinationId,selectedOptions,digital,trackQuantity))';
 
@@ -190,6 +191,16 @@ function parentChoices(raw: unknown): Map<string, Set<string>> | null {
   return choices;
 }
 
+function secureThumbnailUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length > 2_048) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Normalize one full product response. No SKU or stock is inherited into variations. */
 export function flattenProduct(value: unknown): EcwidProduct[] {
   const raw = record(value);
@@ -204,6 +215,7 @@ export function flattenProduct(value: unknown): EcwidProduct[] {
     id: stockIdentifier(raw.id, 'product ID'),
     sku: typeof raw.sku === 'string' ? raw.sku.trim().toUpperCase() : '',
     name: typeof raw.name === 'string' ? raw.name : '',
+    thumbnailUrl: secureThumbnailUrl(raw.smallThumbnailUrl) ?? secureThumbnailUrl(raw.thumbnailUrl),
     quantity: raw.quantity == null ? null : wholeNumber(raw.quantity, 'product quantity', -Number.MAX_SAFE_INTEGER),
     unlimited: raw.unlimited !== false,
     enabled: raw.enabled === true,
@@ -234,6 +246,7 @@ export function flattenProduct(value: unknown): EcwidProduct[] {
       id: parent.id, combinationId,
       sku: typeof combination.sku === 'string' ? combination.sku.trim().toUpperCase() : '',
       name: parent.name,
+      thumbnailUrl: secureThumbnailUrl(combination.smallThumbnailUrl) ?? secureThumbnailUrl(combination.thumbnailUrl) ?? parent.thumbnailUrl ?? null,
       quantity: combination.quantity == null ? null : wholeNumber(combination.quantity, 'variation quantity', -Number.MAX_SAFE_INTEGER),
       unlimited: combination.unlimited !== false,
       enabled: parent.enabled,

@@ -3,7 +3,7 @@ import { collectPages, fetchReadOnlySnapshot, getOnlyEcwidFetch, pendingOrderRev
 import type { EcwidOrder, EcwidPage } from '../src/ecwid';
 
 const fields = {
-  products: 'total,count,offset,items(id,sku,name,quantity,unlimited,enabled,options(name,type,choices(text)),combinations(id,sku,quantity,unlimited,options(name,value),compositeParents,compositeComponents),defaultCombinationId,compositeParents,compositeComponents)',
+  products: 'total,count,offset,items(id,sku,name,thumbnailUrl,smallThumbnailUrl,quantity,unlimited,enabled,options(name,type,choices(text)),combinations(id,sku,thumbnailUrl,smallThumbnailUrl,quantity,unlimited,options(name,value),compositeParents,compositeComponents),defaultCombinationId,compositeParents,compositeComponents)',
   orders: 'total,count,offset,items(id,paymentStatus,fulfillmentStatus,createTimestamp,updateTimestamp,items(id,productId,sku,name,quantity,combinationId,selectedOptions,digital,trackQuantity))',
 };
 function listUrl(kind: 'products' | 'orders' = 'products') {
