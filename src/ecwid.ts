@@ -311,16 +311,16 @@ export class EcwidClient {
     try {
       let response: Response;
       try {
-        // Calling the Workers runtime's native fetch through `this.fetcher(...)`
-        // supplies EcwidClient as its receiver and workerd rejects that as an
-        // illegal invocation. Detach it first so native fetch receives no receiver.
+        // Detach platform fetch implementations that require a receiver-free call.
+        // Keep redirects manual: workerd rejects redirect="error", while follow
+        // could forward the Authorization header to a different host.
         const fetcher = this.fetcher;
         response = await fetcher(`${this.base}${path}`, {
           method,
           headers: { Authorization: `Bearer ${this.credentials.token}`, 'Content-Type': 'application/json' },
           body: body === undefined ? undefined : JSON.stringify(body),
           signal: controller.signal,
-          redirect: 'error',
+          redirect: 'manual',
         });
       } catch {
         throw new EcwidError(isWrite

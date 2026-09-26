@@ -18,7 +18,7 @@ describe('one-time Ecwid absolute opening alignment', () => {
     expect(input).toBe(`https://app.ecwid.com/api/v3/123${suffix}`);
     expect(String(input)).not.toContain(credentials.token);
     expect(new URL(String(input)).search).toBe('');
-    expect(init).toMatchObject({ method: 'PUT', redirect: 'error', body: '{"quantity":37}' });
+    expect(init).toMatchObject({ method: 'PUT', redirect: 'manual', body: '{"quantity":37}' });
     expect(init?.headers).toEqual({ Authorization: `Bearer ${credentials.token}`, 'Content-Type': 'application/json' });
     expect(init?.signal).toBeInstanceOf(AbortSignal);
     expect(JSON.parse(String(init?.body))).toEqual({ quantity: 37 });

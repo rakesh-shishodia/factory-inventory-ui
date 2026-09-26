@@ -67,7 +67,7 @@ describe('Ecwid wire contract', () => {
     await new EcwidClient({ storeId: '123', token: 'token' }, fetcher).adjustStock('1001', -2);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher.mock.calls[0][0]).toBe('https://app.ecwid.com/api/v3/123/products/1001/inventory');
-    expect(fetcher.mock.calls[0][1]).toMatchObject({ method: 'PUT', body: '{"quantityDelta":-2}', redirect: 'error' });
+    expect(fetcher.mock.calls[0][1]).toMatchObject({ method: 'PUT', body: '{"quantityDelta":-2}', redirect: 'manual' });
   });
 
   it.each([500, 502, 503, 408])('classifies HTTP %s after a write as uncertain', async status => {

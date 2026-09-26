@@ -153,7 +153,7 @@ describe('Ecwid variation transport', () => {
     expect(url.searchParams.get('responseFields')).toContain('options(name,type,choices(text))');
     expect(url.searchParams.get('responseFields')).toContain('combinations(id,sku,quantity,unlimited,options(name,value),compositeParents,compositeComponents)');
     expect(url.searchParams.get('responseFields')).not.toContain('imageUrl');
-    expect(fetcher.mock.calls[0][1]).toMatchObject({ method: 'GET', redirect: 'error' });
+    expect(fetcher.mock.calls[0][1]).toMatchObject({ method: 'GET', redirect: 'manual' });
   });
 
   it('refreshes one exact variation from a fresh parent snapshot without quantity fallback', async () => {
@@ -186,7 +186,7 @@ describe('Ecwid variation transport', () => {
     await new EcwidClient({ storeId: '123', token: 'test' }, fetcher).adjustStock('1001', -3, '501');
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher.mock.calls[0]).toEqual(['https://app.ecwid.com/api/v3/123/products/1001/combinations/501/inventory',
-      expect.objectContaining({ method: 'PUT', body: '{"quantityDelta":-3}', redirect: 'error' })]);
+      expect.objectContaining({ method: 'PUT', body: '{"quantityDelta":-3}', redirect: 'manual' })]);
   });
 
   it.each(['', '0', '-1', '../502', '501?token=oops'])('rejects malformed variation target %s before any request', async id => {
